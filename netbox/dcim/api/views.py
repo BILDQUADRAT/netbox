@@ -118,7 +118,13 @@ class RackUnitListView(APIView):
 
         rack = get_object_or_404(Rack, pk=pk)
         face = request.GET.get('face', 0)
-        elevation = rack.get_rack_units(face)
+        exclude_pk = request.GET.get('exclude', None)
+        if exclude_pk is not None:
+            try:
+                exclude_pk = int(exclude_pk)
+            except ValueError:
+                exclude_pk = None
+        elevation = rack.get_rack_units(face, exclude_pk)
 
         # Serialize Devices within the rack elevation
         for u in elevation:
@@ -152,20 +158,20 @@ class ManufacturerDetailView(generics.RetrieveAPIView):
 # Device Types
 #
 
-class DeviceTypeListView(generics.ListAPIView):
+class DeviceTypeListView(CustomFieldModelAPIView, generics.ListAPIView):
     """
     List device types (filterable)
     """
-    queryset = DeviceType.objects.select_related('manufacturer')
+    queryset = DeviceType.objects.select_related('manufacturer').prefetch_related('custom_field_values__field')
     serializer_class = serializers.DeviceTypeSerializer
     filter_class = filters.DeviceTypeFilter
 
 
-class DeviceTypeDetailView(generics.RetrieveAPIView):
+class DeviceTypeDetailView(CustomFieldModelAPIView, generics.RetrieveAPIView):
     """
     Retrieve a single device type
     """
-    queryset = DeviceType.objects.select_related('manufacturer')
+    queryset = DeviceType.objects.select_related('manufacturer').prefetch_related('custom_field_values__field')
     serializer_class = serializers.DeviceTypeDetailSerializer
 
 
@@ -451,7 +457,7 @@ class RelatedConnectionsView(APIView):
                 peer_iface = Interface.objects.get(device__name=peer_device, name=peer_interface)
             except Interface.DoesNotExist:
                 raise Http404()
-            local_iface = peer_iface.get_connected_interface()
+            local_iface = peer_iface.connected_interface
             if local_iface:
                 device = local_iface.device
             else:
@@ -484,7 +490,7 @@ class RelatedConnectionsView(APIView):
 
         # Interface connections
         interfaces = Interface.objects.filter(device=device).select_related('connected_as_a', 'connected_as_b',
-                                                                            'circuit')
+                                                                            'circuit_termination')
         for iface in interfaces:
             data = serializers.InterfaceDetailSerializer(instance=iface).data
             del(data['device'])

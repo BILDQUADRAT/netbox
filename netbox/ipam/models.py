@@ -13,6 +13,7 @@ from extras.models import CustomFieldModel, CustomFieldValue
 from tenancy.models import Tenant
 from utilities.models import CreatedUpdatedModel
 from utilities.sql import NullsFirstQuerySet
+from utilities.utils import csv_format
 
 from .fields import IPNetworkField, IPAddressField
 
@@ -61,6 +62,14 @@ STATUS_CHOICE_CLASSES = {
 }
 
 
+IP_PROTOCOL_TCP = 6
+IP_PROTOCOL_UDP = 17
+IP_PROTOCOL_CHOICES = (
+    (IP_PROTOCOL_TCP, 'TCP'),
+    (IP_PROTOCOL_UDP, 'UDP'),
+)
+
+
 class VRF(CreatedUpdatedModel, CustomFieldModel):
     """
     A virtual routing and forwarding (VRF) table represents a discrete layer three forwarding domain (e.g. a routing
@@ -87,11 +96,11 @@ class VRF(CreatedUpdatedModel, CustomFieldModel):
         return reverse('ipam:vrf', args=[self.pk])
 
     def to_csv(self):
-        return ','.join([
+        return csv_format([
             self.name,
             self.rd,
-            self.tenant.name if self.tenant else '',
-            'True' if self.enforce_unique else '',
+            self.tenant.name if self.tenant else None,
+            self.enforce_unique,
             self.description,
         ])
 
@@ -175,10 +184,10 @@ class Aggregate(CreatedUpdatedModel, CustomFieldModel):
         super(Aggregate, self).save(*args, **kwargs)
 
     def to_csv(self):
-        return ','.join([
-            str(self.prefix),
+        return csv_format([
+            self.prefix,
             self.rir.name,
-            self.date_added.isoformat() if self.date_added else '',
+            self.date_added.isoformat() if self.date_added else None,
             self.description,
         ])
 
@@ -261,15 +270,19 @@ class Prefix(CreatedUpdatedModel, CustomFieldModel):
     assigned to a VLAN where appropriate.
     """
     family = models.PositiveSmallIntegerField(choices=AF_CHOICES, editable=False)
-    prefix = IPNetworkField()
+    prefix = IPNetworkField(help_text="IPv4 or IPv6 network with mask")
     site = models.ForeignKey('dcim.Site', related_name='prefixes', on_delete=models.PROTECT, blank=True, null=True)
     vrf = models.ForeignKey('VRF', related_name='prefixes', on_delete=models.PROTECT, blank=True, null=True,
                             verbose_name='VRF')
     tenant = models.ForeignKey(Tenant, related_name='prefixes', blank=True, null=True, on_delete=models.PROTECT)
     vlan = models.ForeignKey('VLAN', related_name='prefixes', on_delete=models.PROTECT, blank=True, null=True,
                              verbose_name='VLAN')
-    status = models.PositiveSmallIntegerField('Status', choices=PREFIX_STATUS_CHOICES, default=1)
-    role = models.ForeignKey('Role', related_name='prefixes', on_delete=models.SET_NULL, blank=True, null=True)
+    status = models.PositiveSmallIntegerField('Status', choices=PREFIX_STATUS_CHOICES, default=PREFIX_STATUS_ACTIVE,
+                                              help_text="Operational status of this prefix")
+    role = models.ForeignKey('Role', related_name='prefixes', on_delete=models.SET_NULL, blank=True, null=True,
+                             help_text="The primary function of this prefix")
+    is_pool = models.BooleanField(verbose_name='Is a pool', default=False,
+                                  help_text="All IP addresses within this prefix are considered usable")
     description = models.CharField(max_length=100, blank=True)
     custom_field_values = GenericRelation(CustomFieldValue, content_type_field='obj_type', object_id_field='obj_id')
 
@@ -307,13 +320,16 @@ class Prefix(CreatedUpdatedModel, CustomFieldModel):
         super(Prefix, self).save(*args, **kwargs)
 
     def to_csv(self):
-        return ','.join([
-            str(self.prefix),
-            self.vrf.rd if self.vrf else '',
-            self.tenant.name if self.tenant else '',
-            self.site.name if self.site else '',
+        return csv_format([
+            self.prefix,
+            self.vrf.rd if self.vrf else None,
+            self.tenant.name if self.tenant else None,
+            self.site.name if self.site else None,
+            self.vlan.group.name if self.vlan and self.vlan.group else None,
+            self.vlan.vid if self.vlan else None,
             self.get_status_display(),
-            self.role.name if self.role else '',
+            self.role.name if self.role else None,
+            self.is_pool,
             self.description,
         ])
 
@@ -417,14 +433,14 @@ class IPAddress(CreatedUpdatedModel, CustomFieldModel):
         elif self.family == 6 and getattr(self, 'primary_ip6_for', False):
             is_primary = True
 
-        return ','.join([
-            str(self.address),
-            self.vrf.rd if self.vrf else '',
-            self.tenant.name if self.tenant else '',
+        return csv_format([
+            self.address,
+            self.vrf.rd if self.vrf else None,
+            self.tenant.name if self.tenant else None,
             self.get_status_display(),
-            self.device.identifier if self.device else '',
-            self.interface.name if self.interface else '',
-            'True' if is_primary else '',
+            self.device.identifier if self.device else None,
+            self.interface.name if self.interface else None,
+            is_primary,
             self.description,
         ])
 
@@ -508,14 +524,14 @@ class VLAN(CreatedUpdatedModel, CustomFieldModel):
             })
 
     def to_csv(self):
-        return ','.join([
+        return csv_format([
             self.site.name,
-            self.group.name if self.group else '',
-            str(self.vid),
+            self.group.name if self.group else None,
+            self.vid,
             self.name,
-            self.tenant.name if self.tenant else '',
+            self.tenant.name if self.tenant else None,
             self.get_status_display(),
-            self.role.name if self.role else '',
+            self.role.name if self.role else None,
             self.description,
         ])
 
@@ -525,3 +541,28 @@ class VLAN(CreatedUpdatedModel, CustomFieldModel):
 
     def get_status_class(self):
         return STATUS_CHOICE_CLASSES[self.status]
+
+
+class Service(CreatedUpdatedModel):
+    """
+    A Service represents a layer-four service (e.g. HTTP or SSH) running on a Device. A Service may optionally be tied
+    to one or more specific IPAddresses belonging to the Device.
+    """
+    device = models.ForeignKey('dcim.Device', related_name='services', on_delete=models.CASCADE, verbose_name='device')
+    name = models.CharField(max_length=30)
+    protocol = models.PositiveSmallIntegerField(choices=IP_PROTOCOL_CHOICES)
+    port = models.PositiveIntegerField(validators=[MinValueValidator(1), MaxValueValidator(65535)],
+                                       verbose_name='Port number')
+    ipaddresses = models.ManyToManyField('ipam.IPAddress', related_name='services', blank=True,
+                                         verbose_name='IP addresses')
+    description = models.CharField(max_length=100, blank=True)
+
+    class Meta:
+        ordering = ['device', 'protocol', 'port']
+        unique_together = ['device', 'protocol', 'port']
+
+    def __unicode__(self):
+        return u'{} ({}/{})'.format(self.name, self.port, self.get_protocol_display())
+
+    def get_parent_url(self):
+        return self.device.get_absolute_url()

@@ -9,12 +9,14 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Count, Q, ObjectDoesNotExist
 
+from circuits.models import Circuit
 from extras.models import CustomFieldModel, CustomField, CustomFieldValue
 from extras.rpc import RPC_CLIENTS
 from tenancy.models import Tenant
 from utilities.fields import ColorField, NullableCharField
 from utilities.managers import NaturalOrderByManager
 from utilities.models import CreatedUpdatedModel
+from utilities.utils import csv_format
 
 from .fields import ASNField, MACAddressField
 
@@ -244,6 +246,9 @@ class Site(CreatedUpdatedModel, CustomFieldModel):
     asn = ASNField(blank=True, null=True, verbose_name='ASN')
     physical_address = models.CharField(max_length=200, blank=True)
     shipping_address = models.CharField(max_length=200, blank=True)
+    contact_name = models.CharField(max_length=50, blank=True)
+    contact_phone = models.CharField(max_length=20, blank=True)
+    contact_email = models.EmailField(blank=True, verbose_name="Contact E-mail")
     comments = models.TextField(blank=True)
     custom_field_values = GenericRelation(CustomFieldValue, content_type_field='obj_type', object_id_field='obj_id')
 
@@ -259,12 +264,15 @@ class Site(CreatedUpdatedModel, CustomFieldModel):
         return reverse('dcim:site', args=[self.slug])
 
     def to_csv(self):
-        return ','.join([
+        return csv_format([
             self.name,
             self.slug,
-            self.tenant.name if self.tenant else '',
+            self.tenant.name if self.tenant else None,
             self.facility,
-            str(self.asn),
+            self.asn,
+            self.contact_name,
+            self.contact_phone,
+            self.contact_email,
         ])
 
     @property
@@ -285,7 +293,7 @@ class Site(CreatedUpdatedModel, CustomFieldModel):
 
     @property
     def count_circuits(self):
-        return self.circuits.count()
+        return Circuit.objects.filter(terminations__site=self).count()
 
 
 #
@@ -391,16 +399,17 @@ class Rack(CreatedUpdatedModel, CustomFieldModel):
                     })
 
     def to_csv(self):
-        return ','.join([
+        return csv_format([
             self.site.name,
-            self.group.name if self.group else '',
+            self.group.name if self.group else None,
             self.name,
-            self.facility_id or '',
-            self.tenant.name if self.tenant else '',
-            self.role.name if self.role else '',
-            self.get_type_display() if self.type else '',
-            str(self.width),
-            str(self.u_height),
+            self.facility_id,
+            self.tenant.name if self.tenant else None,
+            self.role.name if self.role else None,
+            self.get_type_display() if self.type else None,
+            self.width,
+            self.u_height,
+            self.desc_units,
         ])
 
     @property
@@ -520,7 +529,7 @@ class Manufacturer(models.Model):
         return "{}?manufacturer={}".format(reverse('dcim:devicetype_list'), self.slug)
 
 
-class DeviceType(models.Model):
+class DeviceType(models.Model, CustomFieldModel):
     """
     A DeviceType represents a particular make (Manufacturer) and model of device. It specifies rack height and depth, as
     well as high-level functional role(s).
@@ -552,6 +561,8 @@ class DeviceType(models.Model):
                                              choices=SUBDEVICE_ROLE_CHOICES,
                                              help_text="Parent devices house child devices in device bays. Select "
                                                        "\"None\" if this device type is neither a parent nor a child.")
+    comments = models.TextField(blank=True)
+    custom_field_values = GenericRelation(CustomFieldValue, content_type_field='obj_type', object_id_field='obj_id')
 
     class Meta:
         ordering = ['manufacturer', 'model']
@@ -900,19 +911,19 @@ class Device(CreatedUpdatedModel, CustomFieldModel):
         Device.objects.filter(parent_bay__device=self).update(rack=self.rack)
 
     def to_csv(self):
-        return ','.join([
+        return csv_format([
             self.name or '',
             self.device_role.name,
-            self.tenant.name if self.tenant else '',
+            self.tenant.name if self.tenant else None,
             self.device_type.manufacturer.name,
             self.device_type.model,
-            self.platform.name if self.platform else '',
+            self.platform.name if self.platform else None,
             self.serial,
-            self.asset_tag if self.asset_tag else '',
+            self.asset_tag,
             self.rack.site.name,
             self.rack.name,
-            str(self.position) if self.position else '',
-            self.get_face_display() or '',
+            self.position,
+            self.get_face_display(),
         ])
 
     @property
@@ -981,9 +992,9 @@ class ConsolePort(models.Model):
 
     # Used for connections export
     def to_csv(self):
-        return ','.join([
-            self.cs_port.device.identifier if self.cs_port else '',
-            self.cs_port.name if self.cs_port else '',
+        return csv_format([
+            self.cs_port.device.identifier if self.cs_port else None,
+            self.cs_port.name if self.cs_port else None,
             self.device.identifier,
             self.name,
             self.get_connection_status_display(),
@@ -1045,10 +1056,10 @@ class PowerPort(models.Model):
         return self.device.get_absolute_url()
 
     # Used for connections export
-    def to_csv(self):
+    def csv_format(self):
         return ','.join([
-            self.power_outlet.device.identifier if self.power_outlet else '',
-            self.power_outlet.name if self.power_outlet else '',
+            self.power_outlet.device.identifier if self.power_outlet else None,
+            self.power_outlet.name if self.power_outlet else None,
             self.device.identifier,
             self.name,
             self.get_connection_status_display(),
@@ -1136,7 +1147,7 @@ class Interface(models.Model):
     @property
     def is_connected(self):
         try:
-            return bool(self.circuit)
+            return bool(self.circuit_termination)
         except ObjectDoesNotExist:
             pass
         return bool(self.connection)
@@ -1153,13 +1164,18 @@ class Interface(models.Model):
             pass
         return None
 
-    def get_connected_interface(self):
-        connection = InterfaceConnection.objects.select_related().filter(Q(interface_a=self) | Q(interface_b=self))\
-            .first()
-        if connection and connection.interface_a == self:
-            return connection.interface_b
-        elif connection:
-            return connection.interface_a
+    @property
+    def connected_interface(self):
+        try:
+            if self.connected_as_a:
+                return self.connected_as_a.interface_b
+        except ObjectDoesNotExist:
+            pass
+        try:
+            if self.connected_as_b:
+                return self.connected_as_b.interface_a
+        except ObjectDoesNotExist:
+            pass
         return None
 
 
@@ -1181,7 +1197,7 @@ class InterfaceConnection(models.Model):
 
     # Used for connections export
     def to_csv(self):
-        return ','.join([
+        return csv_format([
             self.interface_a.device.identifier,
             self.interface_a.name,
             self.interface_b.device.identifier,

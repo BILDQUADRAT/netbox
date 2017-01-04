@@ -14,7 +14,7 @@ except ImportError:
                                "the documentation.")
 
 
-VERSION = '1.7.3'
+VERSION = '1.8.1'
 
 # Import local configuration
 for setting in ['ALLOWED_HOSTS', 'DATABASE', 'SECRET_KEY']:
@@ -119,7 +119,8 @@ INSTALLED_APPS = (
 )
 
 # Middleware
-MIDDLEWARE_CLASSES = (
+MIDDLEWARE = (
+    'debug_toolbar.middleware.DebugToolbarMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -194,6 +195,12 @@ if LOGIN_REQUIRED:
 SWAGGER_SETTINGS = {
     'base_path': '{}/{}api/docs'.format(ALLOWED_HOSTS[0], BASE_PATH),
 }
+
+# Django debug toolbar
+INTERNAL_IPS = (
+    '127.0.0.1',
+    '::1',
+)
 
 
 try:
