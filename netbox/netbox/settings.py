@@ -14,7 +14,7 @@ except ImportError:
                                "the documentation.")
 
 
-VERSION = '1.8.2'
+VERSION = '1.8.3'
 
 # Import local configuration
 for setting in ['ALLOWED_HOSTS', 'DATABASE', 'SECRET_KEY']:
@@ -52,7 +52,7 @@ CSRF_TRUSTED_ORIGINS = ALLOWED_HOSTS
 # Attempt to import LDAP configuration if it has been defined
 LDAP_IGNORE_CERT_ERRORS = False
 try:
-    from ldap_config import *
+    from netbox.ldap_config import *
     LDAP_CONFIGURED = True
 except ImportError:
     LDAP_CONFIGURED = False
