@@ -2,6 +2,8 @@ import csv
 import itertools
 import re
 
+from mptt.forms import TreeNodeMultipleChoiceField
+
 from django import forms
 from django.conf import settings
 from django.core.urlresolvers import reverse_lazy
@@ -169,6 +171,27 @@ class SelectWithDisabled(forms.Select):
                            force_text(option_label))
 
 
+class ArrayFieldSelectMultiple(SelectWithDisabled, forms.SelectMultiple):
+    """
+    MultiSelect widgets for a SimpleArrayField. Choices must be populated on the widget.
+    """
+
+    def __init__(self, *args, **kwargs):
+        self.delimiter = kwargs.pop('delimiter', ',')
+        super(ArrayFieldSelectMultiple, self).__init__(*args, **kwargs)
+
+    def render_options(self, selected_choices):
+        # Split the delimited string of values into a list
+        if selected_choices:
+            selected_choices = selected_choices.split(self.delimiter)
+        return super(ArrayFieldSelectMultiple, self).render_options(selected_choices)
+
+    def value_from_datadict(self, data, files, name):
+        # Condense the list of selected choices into a delimited string
+        data = super(ArrayFieldSelectMultiple, self).value_from_datadict(data, files, name)
+        return self.delimiter.join(data)
+
+
 class APISelect(SelectWithDisabled):
     """
     A select widget populated via an API call
@@ -236,14 +259,15 @@ class CSVDataField(forms.CharField):
         if not self.help_text:
             self.help_text = 'Enter one line per record in CSV format.'
 
-    def utf_8_encoder(self, unicode_csv_data):
-        for line in unicode_csv_data:
-            yield line.encode('utf-8')
-
     def to_python(self, value):
-        # Return a list of dictionaries, each representing an individual record
+        """
+        Return a list of dictionaries, each representing an individual record
+        """
+        # Python 2's csv module has problems with Unicode
+        if not isinstance(value, str):
+            value = value.encode('utf-8')
         records = []
-        reader = csv.reader(self.utf_8_encoder(value.splitlines()))
+        reader = csv.reader(value.splitlines())
         for i, row in enumerate(reader, start=1):
             if row:
                 if len(row) < len(self.columns):
@@ -252,6 +276,7 @@ class CSVDataField(forms.CharField):
                 elif len(row) > len(self.columns):
                     raise forms.ValidationError("Line {}: Too many fields (found {}; expected {})"
                                                 .format(i, len(row), len(self.columns)))
+                row = [col.strip() for col in row]
                 record = dict(zip(self.columns, row))
                 records.append(record)
         return records
@@ -342,7 +367,7 @@ class SlugField(forms.SlugField):
         self.widget.attrs['slug-source'] = slug_source
 
 
-class FilterChoiceField(forms.ModelMultipleChoiceField):
+class FilterChoiceFieldMixin(object):
     iterator = forms.models.ModelChoiceIterator
 
     def __init__(self, null_option=None, *args, **kwargs):
@@ -351,12 +376,13 @@ class FilterChoiceField(forms.ModelMultipleChoiceField):
             kwargs['required'] = False
         if 'widget' not in kwargs:
             kwargs['widget'] = forms.SelectMultiple(attrs={'size': 6})
-        super(FilterChoiceField, self).__init__(*args, **kwargs)
+        super(FilterChoiceFieldMixin, self).__init__(*args, **kwargs)
 
     def label_from_instance(self, obj):
+        label = super(FilterChoiceFieldMixin, self).label_from_instance(obj)
         if hasattr(obj, 'filter_count'):
-            return u'{} ({})'.format(obj, obj.filter_count)
-        return force_text(obj)
+            return u'{} ({})'.format(label, obj.filter_count)
+        return label
 
     def _get_choices(self):
         if hasattr(self, '_choices'):
@@ -366,6 +392,14 @@ class FilterChoiceField(forms.ModelMultipleChoiceField):
         return self.iterator(self)
 
     choices = property(_get_choices, forms.ChoiceField._set_choices)
+
+
+class FilterChoiceField(FilterChoiceFieldMixin, forms.ModelMultipleChoiceField):
+    pass
+
+
+class FilterTreeNodeMultipleChoiceField(FilterChoiceFieldMixin, TreeNodeMultipleChoiceField):
+    pass
 
 
 class LaxURLField(forms.URLField):
