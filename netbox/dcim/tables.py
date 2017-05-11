@@ -6,17 +6,17 @@ from utilities.tables import BaseTable, ToggleColumn
 from .models import (
     ConsolePort, ConsolePortTemplate, ConsoleServerPortTemplate, Device, DeviceBayTemplate, DeviceRole, DeviceType,
     Interface, InterfaceTemplate, Manufacturer, Platform, PowerOutletTemplate, PowerPort, PowerPortTemplate, Rack,
-    RackGroup, Region, Site,
+    RackGroup, RackReservation, Region, Site,
 )
 
 
 REGION_LINK = """
 {% if record.get_children %}
-    <span style="padding-left: {{ record.get_ancestors|length }}0px "><i class="fa fa-caret-right"></i></a>
+    <span style="padding-left: {{ record.get_ancestors|length }}0px "><i class="fa fa-caret-right"></i>
 {% else %}
     <span style="padding-left: {{ record.get_ancestors|length }}9px">
 {% endif %}
-    {{ record.name }}
+    <a href="{% url 'dcim:site_list' %}?region={{ record.slug }}">{{ record.name }}</a>
 </span>
 """
 
@@ -64,6 +64,12 @@ RACK_ROLE = """
 {% endif %}
 """
 
+RACKRESERVATION_ACTIONS = """
+{% if perms.dcim.change_rackreservation %}
+    <a href="{% url 'dcim:rackreservation_edit' pk=record.pk %}" class="btn btn-xs btn-warning"><i class="glyphicon glyphicon-pencil" aria-hidden="true"></i></a>
+{% endif %}
+"""
+
 DEVICEROLE_ACTIONS = """
 {% if perms.dcim.change_devicerole %}
     <a href="{% url 'dcim:devicerole_edit' slug=record.slug %}" class="btn btn-xs btn-warning"><i class="glyphicon glyphicon-pencil" aria-hidden="true"></i></a>
@@ -98,6 +104,10 @@ DEVICE_PRIMARY_IP = """
 {{ record.primary_ip6.address.ip|default:"" }}
 {% if record.primary_ip6 and record.primary_ip4 %}<br />{% endif %}
 {{ record.primary_ip4.address.ip|default:"" }}
+"""
+
+SUBDEVICE_ROLE_TEMPLATE = """
+{% if record.subdevice_role == True %}Parent{% elif record.subdevice_role == False %}Child{% else %}&mdash;{% endif %}
 """
 
 UTILIZATION_GRAPH = """
@@ -223,6 +233,23 @@ class RackImportTable(BaseTable):
 
 
 #
+# Rack reservations
+#
+
+class RackReservationTable(BaseTable):
+    pk = ToggleColumn()
+    rack = tables.LinkColumn('dcim:rack', args=[Accessor('rack.pk')])
+    unit_list = tables.Column(orderable=False, verbose_name='Units')
+    actions = tables.TemplateColumn(
+        template_code=RACKRESERVATION_ACTIONS, attrs={'td': {'class': 'text-right'}}, verbose_name=''
+    )
+
+    class Meta(BaseTable.Meta):
+        model = RackReservation
+        fields = ('pk', 'rack', 'unit_list', 'user', 'created', 'description', 'actions')
+
+
+#
 # Manufacturers
 #
 
@@ -249,11 +276,18 @@ class DeviceTypeTable(BaseTable):
     model = tables.LinkColumn('dcim:devicetype', args=[Accessor('pk')], verbose_name='Device Type')
     part_number = tables.Column(verbose_name='Part Number')
     is_full_depth = tables.BooleanColumn(verbose_name='Full Depth')
+    is_console_server = tables.BooleanColumn(verbose_name='CS')
+    is_pdu = tables.BooleanColumn(verbose_name='PDU')
+    is_network_device = tables.BooleanColumn(verbose_name='Net')
+    subdevice_role = tables.TemplateColumn(SUBDEVICE_ROLE_TEMPLATE, verbose_name='Subdevice Role')
     instance_count = tables.Column(verbose_name='Instances')
 
     class Meta(BaseTable.Meta):
         model = DeviceType
-        fields = ('pk', 'model', 'manufacturer', 'part_number', 'u_height', 'is_full_depth', 'instance_count')
+        fields = (
+            'pk', 'model', 'manufacturer', 'part_number', 'u_height', 'is_full_depth', 'is_console_server', 'is_pdu',
+            'is_network_device', 'subdevice_role', 'instance_count'
+        )
 
 
 #

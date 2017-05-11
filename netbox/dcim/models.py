@@ -1,4 +1,5 @@
 from collections import OrderedDict
+from itertools import count, groupby
 
 from mptt.models import MPTTModel, TreeForeignKey
 
@@ -293,7 +294,7 @@ class Site(CreatedUpdatedModel, CustomFieldModel):
 
     @property
     def count_devices(self):
-        return Device.objects.filter(rack__site=self).count()
+        return Device.objects.filter(site=self).count()
 
     @property
     def count_circuits(self):
@@ -571,6 +572,15 @@ class RackReservation(models.Model):
                     )
                 })
 
+    @property
+    def unit_list(self):
+        """
+        Express the assigned units as a string of summarized ranges. For example:
+            [0, 1, 2, 10, 14, 15, 16] => "0-2, 10, 14-16"
+        """
+        group = (list(x) for _, x in groupby(sorted(self.units), lambda x, c=count(): next(c) - x))
+        return ', '.join('-'.join(map(str, (g[0], g[-1])[:len(g)])) for g in group)
+
 
 #
 # Device Types
@@ -781,9 +791,9 @@ class InterfaceManager(models.Manager):
         IFACE_ORDERING_CHOICES (typically indicated by a parent Device's DeviceType).
 
         To order interfaces naturally, the `name` field is split into five distinct components: leading text (name),
-        slot, subslot, position, and channel:
+        slot, subslot, position, channel, and virtual circuit:
 
-            {name}{slot}/{subslot}/{position}:{channel}
+            {name}{slot}/{subslot}/{position}:{channel}.{vc}
 
         Components absent from the interface name are ignored. For example, an interface named GigabitEthernet0/1 would
         be parsed as follows:
@@ -793,21 +803,23 @@ class InterfaceManager(models.Manager):
             subslot = 0
             position = 1
             channel = None
+            vc = 0
 
         The chosen sorting method will determine which fields are ordered first in the query.
         """
         queryset = self.get_queryset()
         sql_col = '{}.name'.format(queryset.model._meta.db_table)
         ordering = {
-            IFACE_ORDERING_POSITION: ('_slot', '_subslot', '_position', '_channel', '_name'),
-            IFACE_ORDERING_NAME: ('_name', '_slot', '_subslot', '_position', '_channel'),
+            IFACE_ORDERING_POSITION: ('_slot', '_subslot', '_position', '_channel', '_vc', '_name'),
+            IFACE_ORDERING_NAME: ('_name', '_slot', '_subslot', '_position', '_channel', '_vc'),
         }[method]
         return queryset.extra(select={
             '_name': "SUBSTRING({} FROM '^([^0-9]+)')".format(sql_col),
-            '_slot': "CAST(SUBSTRING({} FROM '([0-9]+)\/[0-9]+\/[0-9]+(:[0-9]+)?$') AS integer)".format(sql_col),
-            '_subslot': "CAST(SUBSTRING({} FROM '([0-9]+)\/[0-9]+(:[0-9]+)?$') AS integer)".format(sql_col),
-            '_position': "CAST(SUBSTRING({} FROM '([0-9]+)(:[0-9]+)?$') AS integer)".format(sql_col),
-            '_channel': "CAST(SUBSTRING({} FROM ':([0-9]+)$') AS integer)".format(sql_col),
+            '_slot': "CAST(SUBSTRING({} FROM '([0-9]+)\/[0-9]+\/[0-9]+(:[0-9]+)?(\.[0-9]+)?$') AS integer)".format(sql_col),
+            '_subslot': "CAST(SUBSTRING({} FROM '([0-9]+)\/[0-9]+(:[0-9]+)?(\.[0-9]+)?$') AS integer)".format(sql_col),
+            '_position': "CAST(SUBSTRING({} FROM '([0-9]+)(:[0-9]+)?(\.[0-9]+)?$') AS integer)".format(sql_col),
+            '_channel': "COALESCE(CAST(SUBSTRING({} FROM ':([0-9]+)(\.[0-9]+)?$') AS integer), 0)".format(sql_col),
+            '_vc': "COALESCE(CAST(SUBSTRING({} FROM '\.([0-9]+)$') AS integer), 0)".format(sql_col),
         }).order_by(*ordering)
 
 
@@ -975,25 +987,26 @@ class Device(CreatedUpdatedModel, CustomFieldModel):
                 # Child devices cannot be assigned to a rack face/unit
                 if self.device_type.is_child_device and self.face is not None:
                     raise ValidationError({
-                        'face': "Child device types cannot be assigned to a rack face. This is an attribute of the parent "
-                                "device."
+                        'face': "Child device types cannot be assigned to a rack face. This is an attribute of the "
+                                "parent device."
                     })
                 if self.device_type.is_child_device and self.position:
                     raise ValidationError({
-                        'position': "Child device types cannot be assigned to a rack position. This is an attribute of the "
-                                    "parent device."
+                        'position': "Child device types cannot be assigned to a rack position. This is an attribute of "
+                                    "the parent device."
                     })
 
                 # Validate rack space
                 rack_face = self.face if not self.device_type.is_full_depth else None
                 exclude_list = [self.pk] if self.pk else []
                 try:
-                    available_units = self.rack.get_available_units(u_height=self.device_type.u_height, rack_face=rack_face,
-                                                                    exclude=exclude_list)
+                    available_units = self.rack.get_available_units(
+                        u_height=self.device_type.u_height, rack_face=rack_face, exclude=exclude_list
+                    )
                     if self.position and self.position not in available_units:
                         raise ValidationError({
-                            'position': "U{} is already occupied or does not have sufficient space to accommodate a(n) {} "
-                                        "({}U).".format(self.position, self.device_type, self.device_type.u_height)
+                            'position': "U{} is already occupied or does not have sufficient space to accommodate a(n) "
+                                        "{} ({}U).".format(self.position, self.device_type, self.device_type.u_height)
                         })
                 except Rack.DoesNotExist:
                     pass
@@ -1034,8 +1047,8 @@ class Device(CreatedUpdatedModel, CustomFieldModel):
                  self.device_type.device_bay_templates.all()]
             )
 
-        # Update Rack assignment for any child Devices
-        Device.objects.filter(parent_bay__device=self).update(rack=self.rack)
+        # Update Site and Rack assignment for any child Devices
+        Device.objects.filter(parent_bay__device=self).update(site=self.site, rack=self.rack)
 
     def to_csv(self):
         return csv_format([
@@ -1059,8 +1072,10 @@ class Device(CreatedUpdatedModel, CustomFieldModel):
             return self.name
         elif self.position:
             return u"{} ({} U{})".format(self.device_type, self.rack.name, self.position)
-        else:
+        elif self.rack:
             return u"{} ({})".format(self.device_type, self.rack.name)
+        else:
+            return u"{} ({})".format(self.device_type, self.site.name)
 
     @property
     def identifier(self):

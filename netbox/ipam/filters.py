@@ -7,12 +7,13 @@ from django.db.models import Q
 from dcim.models import Site, Device, Interface
 from extras.filters import CustomFieldFilterSet
 from tenancy.models import Tenant
-from utilities.filters import NullableModelMultipleChoiceFilter
+from utilities.filters import NullableModelMultipleChoiceFilter, NumericInFilter
 
 from .models import Aggregate, IPAddress, Prefix, RIR, Role, Service, VLAN, VLANGroup, VRF
 
 
 class VRFFilter(CustomFieldFilterSet, django_filters.FilterSet):
+    id__in = NumericInFilter(name='id', lookup_expr='in')
     q = django_filters.CharFilter(
         method='search',
         label='Search',
@@ -44,6 +45,7 @@ class VRFFilter(CustomFieldFilterSet, django_filters.FilterSet):
 
 
 class RIRFilter(django_filters.FilterSet):
+    id__in = NumericInFilter(name='id', lookup_expr='in')
 
     class Meta:
         model = RIR
@@ -51,6 +53,7 @@ class RIRFilter(django_filters.FilterSet):
 
 
 class AggregateFilter(CustomFieldFilterSet, django_filters.FilterSet):
+    id__in = NumericInFilter(name='id', lookup_expr='in')
     q = django_filters.CharFilter(
         method='search',
         label='Search',
@@ -84,6 +87,7 @@ class AggregateFilter(CustomFieldFilterSet, django_filters.FilterSet):
 
 
 class PrefixFilter(CustomFieldFilterSet, django_filters.FilterSet):
+    id__in = NumericInFilter(name='id', lookup_expr='in')
     q = django_filters.CharFilter(
         method='search',
         label='Search',
@@ -182,6 +186,7 @@ class PrefixFilter(CustomFieldFilterSet, django_filters.FilterSet):
 
 
 class IPAddressFilter(CustomFieldFilterSet, django_filters.FilterSet):
+    id__in = NumericInFilter(name='id', lookup_expr='in')
     q = django_filters.CharFilter(
         method='search',
         label='Search',
@@ -254,7 +259,7 @@ class IPAddressFilter(CustomFieldFilterSet, django_filters.FilterSet):
             return queryset
         try:
             query = str(IPNetwork(value.strip()).cidr)
-            return queryset.filter(address__net_contained_or_equal=query)
+            return queryset.filter(address__net_host_contained=query)
         except AddrFormatError:
             return queryset.none()
 
@@ -283,6 +288,7 @@ class VLANGroupFilter(django_filters.FilterSet):
 
 
 class VLANFilter(CustomFieldFilterSet, django_filters.FilterSet):
+    id__in = NumericInFilter(name='id', lookup_expr='in')
     q = django_filters.CharFilter(
         method='search',
         label='Search',

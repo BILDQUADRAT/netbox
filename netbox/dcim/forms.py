@@ -23,7 +23,7 @@ from .models import (
     Interface, IFACE_FF_CHOICES, IFACE_FF_LAG, IFACE_ORDERING_CHOICES, InterfaceConnection, InterfaceTemplate,
     Manufacturer, Module, Platform, PowerOutlet, PowerOutletTemplate, PowerPort, PowerPortTemplate, RACK_TYPE_CHOICES,
     RACK_WIDTH_CHOICES, Rack, RackGroup, RackReservation, RackRole, Region, Site, STATUS_CHOICES, SUBDEVICE_ROLE_CHILD,
-    VIRTUAL_IFACE_TYPES
+    SUBDEVICE_ROLE_PARENT, VIRTUAL_IFACE_TYPES
 )
 
 
@@ -330,6 +330,19 @@ class RackReservationForm(BootstrapMixin, forms.ModelForm):
         return unit_choices
 
 
+class RackReservationFilterForm(BootstrapMixin, forms.Form):
+    q = forms.CharField(required=False, label='Search')
+    site = FilterChoiceField(
+        queryset=Site.objects.annotate(filter_count=Count('racks__reservations')),
+        to_field_name='slug'
+    )
+    group_id = FilterChoiceField(
+        queryset=RackGroup.objects.select_related('site').annotate(filter_count=Count('racks__reservations')),
+        label='Rack group',
+        null_option=(0, 'None')
+    )
+
+
 #
 # Manufacturers
 #
@@ -374,6 +387,21 @@ class DeviceTypeFilterForm(BootstrapMixin, CustomFieldFilterForm):
     manufacturer = FilterChoiceField(
         queryset=Manufacturer.objects.annotate(filter_count=Count('device_types')),
         to_field_name='slug'
+    )
+    is_console_server = forms.BooleanField(
+        required=False, label='Is a console server', widget=forms.CheckboxInput(attrs={'value': 'True'}))
+    is_pdu = forms.BooleanField(
+        required=False, label='Is a PDU', widget=forms.CheckboxInput(attrs={'value': 'True'})
+    )
+    is_network_device = forms.BooleanField(
+        required=False, label='Is a network device', widget=forms.CheckboxInput(attrs={'value': 'True'})
+    )
+    subdevice_role = forms.NullBooleanField(
+        required=False, label='Subdevice role', widget=forms.Select(choices=(
+            ('', '---------'),
+            (SUBDEVICE_ROLE_PARENT, 'Parent'),
+            (SUBDEVICE_ROLE_CHILD, 'Child'),
+        ))
     )
 
 
@@ -680,13 +708,21 @@ class DeviceFromCSVForm(BaseDeviceFromCSVForm):
 
 
 class ChildDeviceFromCSVForm(BaseDeviceFromCSVForm):
-    parent = FlexibleModelChoiceField(queryset=Device.objects.all(), to_field_name='name', required=False,
-                                      error_messages={'invalid_choice': 'Parent device not found.'})
+    parent = FlexibleModelChoiceField(
+        queryset=Device.objects.all(),
+        to_field_name='name',
+        required=False,
+        error_messages={
+            'invalid_choice': 'Parent device not found.'
+        }
+    )
     device_bay_name = forms.CharField(required=False)
 
     class Meta(BaseDeviceFromCSVForm.Meta):
-        fields = ['name', 'device_role', 'tenant', 'manufacturer', 'model_name', 'platform', 'serial', 'asset_tag',
-                  'parent', 'device_bay_name']
+        fields = [
+            'name', 'device_role', 'tenant', 'manufacturer', 'model_name', 'platform', 'serial', 'asset_tag', 'parent',
+            'device_bay_name',
+        ]
 
     def clean(self):
 
@@ -733,7 +769,7 @@ class DeviceFilterForm(BootstrapMixin, CustomFieldFilterForm):
     model = Device
     q = forms.CharField(required=False, label='Search')
     site = FilterChoiceField(
-        queryset=Site.objects.annotate(filter_count=Count('racks__devices')),
+        queryset=Site.objects.annotate(filter_count=Count('devices')),
         to_field_name='slug',
     )
     rack_group_id = FilterChoiceField(
@@ -934,28 +970,29 @@ class ConsolePortConnectionForm(BootstrapMixin, forms.ModelForm):
         if not self.instance.pk:
             raise RuntimeError("ConsolePortConnectionForm must be initialized with an existing ConsolePort instance.")
 
-        self.initial['site'] = self.instance.device.site
-        self.fields['rack'].queryset = Rack.objects.filter(site=self.instance.device.site)
-        self.fields['cs_port'].required = True
-        self.fields['connection_status'].choices = CONNECTION_STATUS_CHOICES
-
-        # Initialize console server choices
-        if self.is_bound and self.data.get('rack'):
-            self.fields['console_server'].queryset = Device.objects.filter(rack=self.data['rack'],
-                                                                           device_type__is_console_server=True)
-        elif self.initial.get('rack'):
-            self.fields['console_server'].queryset = Device.objects.filter(rack=self.initial['rack'],
-                                                                           device_type__is_console_server=True)
+        # Initialize rack choices if site is set
+        if self.initial.get('site'):
+            self.fields['rack'].queryset = Rack.objects.filter(site=self.initial['site'])
         else:
-            self.fields['console_server'].queryset = Device.objects.filter(site=self.instance.device.site,
-                                                                           rack__isnull=True,
-                                                                           device_type__is_console_server=True)
+            self.fields['rack'].choices = []
 
-        # Initialize CS port choices
-        if self.is_bound:
-            self.fields['cs_port'].queryset = ConsoleServerPort.objects.filter(device__pk=self.data['console_server'])
-        elif self.initial.get('console_server', None):
-            self.fields['cs_port'].queryset = ConsoleServerPort.objects.filter(device__pk=self.initial['console_server'])
+        # Initialize console_server choices if rack or site is set
+        if self.initial.get('rack'):
+            self.fields['console_server'].queryset = Device.objects.filter(
+                rack=self.initial['rack'], device_type__is_console_server=True
+            )
+        elif self.initial.get('site'):
+            self.fields['console_server'].queryset = Device.objects.filter(
+                site=self.initial['site'], rack__isnull=True, device_type__is_console_server=True
+            )
+        else:
+            self.fields['console_server'].choices = []
+
+        # Initialize CS port choices if console_server is set
+        if self.initial.get('console_server'):
+            self.fields['cs_port'].queryset = ConsoleServerPort.objects.filter(
+                device=self.initial['console_server']
+            )
         else:
             self.fields['cs_port'].choices = []
 
@@ -1033,27 +1070,27 @@ class ConsoleServerPortConnectionForm(BootstrapMixin, forms.Form):
             'connection_status': 'Status',
         }
 
-    def __init__(self, consoleserverport, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
 
         super(ConsoleServerPortConnectionForm, self).__init__(*args, **kwargs)
 
-        self.initial['site'] = consoleserverport.device.site
-        self.fields['rack'].queryset = Rack.objects.filter(site=consoleserverport.device.site)
-
-        # Initialize device choices
-        if self.is_bound and self.data.get('rack'):
-            self.fields['device'].queryset = Device.objects.filter(rack=self.data['rack'])
-        elif self.initial.get('rack', None):
-            self.fields['device'].queryset = Device.objects.filter(rack=self.initial['rack'])
+        # Initialize rack choices if site is set
+        if self.initial.get('site'):
+            self.fields['rack'].queryset = Rack.objects.filter(site=self.initial['site'])
         else:
-            self.fields['device'].queryset = Device.objects.filter(site=consoleserverport.device.site,
-                                                                   rack__isnull=True)
+            self.fields['rack'].choices = []
 
-        # Initialize port choices
-        if self.is_bound:
-            self.fields['port'].queryset = ConsolePort.objects.filter(device__pk=self.data['device'])
-        elif self.initial.get('device', None):
-            self.fields['port'].queryset = ConsolePort.objects.filter(device_pk=self.initial['device'])
+        # Initialize device choices if rack or site is set
+        if self.initial.get('rack'):
+            self.fields['device'].queryset = Device.objects.filter(rack=self.initial['rack'])
+        elif self.initial.get('site'):
+            self.fields['device'].queryset = Device.objects.filter(site=self.initial['site'], rack__isnull=True)
+        else:
+            self.fields['device'].choices = []
+
+        # Initialize port choices if device is set
+        if self.initial.get('device'):
+            self.fields['port'].queryset = ConsolePort.objects.filter(device=self.initial['device'])
         else:
             self.fields['port'].choices = []
 
@@ -1201,28 +1238,27 @@ class PowerPortConnectionForm(BootstrapMixin, forms.ModelForm):
         if not self.instance.pk:
             raise RuntimeError("PowerPortConnectionForm must be initialized with an existing PowerPort instance.")
 
-        self.initial['site'] = self.instance.device.site
-        self.fields['rack'].queryset = Rack.objects.filter(site=self.instance.device.site)
-        self.fields['power_outlet'].required = True
-        self.fields['connection_status'].choices = CONNECTION_STATUS_CHOICES
-
-        # Initialize PDU choices
-        if self.is_bound and self.data.get('rack'):
-            self.fields['pdu'].queryset = Device.objects.filter(rack=self.data['rack'],
-                                                                device_type__is_pdu=True)
-        elif self.initial.get('rack', None):
-            self.fields['pdu'].queryset = Device.objects.filter(rack=self.initial['rack'],
-                                                                device_type__is_pdu=True)
+        # Initialize rack choices if site is set
+        if self.initial.get('site'):
+            self.fields['rack'].queryset = Rack.objects.filter(site=self.initial['site'])
         else:
-            self.fields['pdu'].queryset = Device.objects.filter(site=self.instance.device.site,
-                                                                rack__isnull=True,
-                                                                device_type__is_pdu=True)
+            self.fields['rack'].choices = []
 
-        # Initialize power outlet choices
-        if self.is_bound:
-            self.fields['power_outlet'].queryset = PowerOutlet.objects.filter(device__pk=self.data['pdu'])
-        elif self.initial.get('pdu', None):
-            self.fields['power_outlet'].queryset = PowerOutlet.objects.filter(device__pk=self.initial['pdu'])
+        # Initialize pdu choices if rack or site is set
+        if self.initial.get('rack'):
+            self.fields['pdu'].queryset = Device.objects.filter(
+                rack=self.initial['rack'], device_type__is_pdu=True
+            )
+        elif self.initial.get('site'):
+            self.fields['pdu'].queryset = Device.objects.filter(
+                site=self.initial['site'], rack__isnull=True, device_type__is_pdu=True
+            )
+        else:
+            self.fields['pdu'].choices = []
+
+        # Initialize power outlet choices if pdu is set
+        if self.initial.get('pdu'):
+            self.fields['power_outlet'].queryset = PowerOutlet.objects.filter(device=self.initial['pdu'])
         else:
             self.fields['power_outlet'].choices = []
 
@@ -1300,27 +1336,27 @@ class PowerOutletConnectionForm(BootstrapMixin, forms.Form):
             'connection_status': 'Status',
         }
 
-    def __init__(self, poweroutlet, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
 
         super(PowerOutletConnectionForm, self).__init__(*args, **kwargs)
 
-        self.initial['site'] = poweroutlet.device.site
-        self.fields['rack'].queryset = Rack.objects.filter(site=poweroutlet.device.site)
-
-        # Initialize device choices
-        if self.is_bound and self.data.get('rack'):
-            self.fields['device'].queryset = Device.objects.filter(rack=self.data['rack'])
-        elif self.initial.get('rack', None):
-            self.fields['device'].queryset = Device.objects.filter(rack=self.initial['rack'])
+        # Initialize rack choices if site is set
+        if self.initial.get('site'):
+            self.fields['rack'].queryset = Rack.objects.filter(site=self.initial['site'])
         else:
-            self.fields['device'].queryset = Device.objects.filter(site=poweroutlet.device.site,
-                                                                   rack__isnull=True)
+            self.fields['rack'].choices = []
 
-        # Initialize port choices
-        if self.is_bound:
-            self.fields['port'].queryset = PowerPort.objects.filter(device__pk=self.data['device'])
-        elif self.initial.get('device', None):
-            self.fields['port'].queryset = PowerPort.objects.filter(device_pk=self.initial['device'])
+        # Initialize device choices if rack or site is set
+        if self.initial.get('rack'):
+            self.fields['device'].queryset = Device.objects.filter(rack=self.initial['rack'])
+        elif self.initial.get('site'):
+            self.fields['device'].queryset = Device.objects.filter(site=self.initial['site'], rack__isnull=True)
+        else:
+            self.fields['device'].choices = []
+
+        # Initialize port choices if device is set
+        if self.initial.get('device'):
+            self.fields['port'].queryset = PowerPort.objects.filter(device=self.initial['device'])
         else:
             self.fields['port'].choices = []
 
@@ -1386,9 +1422,16 @@ class InterfaceBulkEditForm(BootstrapMixin, BulkEditForm):
         super(InterfaceBulkEditForm, self).__init__(*args, **kwargs)
 
         # Limit LAG choices to interfaces which belong to the parent device.
+        device = None
         if self.initial.get('device'):
-            self.fields['lag'].queryset = Interface.objects.filter(
-                device=self.initial['device'], form_factor=IFACE_FF_LAG
+            try:
+                device = Device.objects.get(pk=self.initial.get('device'))
+            except Device.DoesNotExist:
+                pass
+        if device is not None:
+            interface_ordering = device.device_type.interface_ordering
+            self.fields['lag'].queryset = Interface.objects.order_naturally(method=interface_ordering).filter(
+                device=device, form_factor=IFACE_FF_LAG
             )
         else:
             self.fields['lag'].choices = []
@@ -1458,7 +1501,7 @@ class InterfaceConnectionForm(BootstrapMixin, forms.ModelForm):
         super(InterfaceConnectionForm, self).__init__(*args, **kwargs)
 
         # Initialize interface A choices
-        device_a_interfaces = Interface.objects.filter(device=device_a).exclude(
+        device_a_interfaces = Interface.objects.order_naturally().filter(device=device_a).exclude(
             form_factor__in=VIRTUAL_IFACE_TYPES
         ).select_related(
             'circuit_termination', 'connected_as_a', 'connected_as_b'
@@ -1610,20 +1653,23 @@ class DeviceBayCreateForm(DeviceComponentForm):
 
 
 class PopulateDeviceBayForm(BootstrapMixin, forms.Form):
-    installed_device = forms.ModelChoiceField(queryset=Device.objects.all(), label='Child Device',
-                                              help_text="Child devices must first be created within the rack occupied "
-                                                        "by the parent device. Then they can be assigned to a bay.")
+    installed_device = forms.ModelChoiceField(
+        queryset=Device.objects.all(),
+        label='Child Device',
+        help_text="Child devices must first be created and assigned to the site/rack of the parent device."
+    )
 
     def __init__(self, device_bay, *args, **kwargs):
 
         super(PopulateDeviceBayForm, self).__init__(*args, **kwargs)
 
-        children_queryset = Device.objects.filter(rack=device_bay.device.rack,
-                                                  parent_bay__isnull=True,
-                                                  device_type__u_height=0,
-                                                  device_type__subdevice_role=SUBDEVICE_ROLE_CHILD)\
-            .exclude(pk=device_bay.device.pk)
-        self.fields['installed_device'].queryset = children_queryset
+        self.fields['installed_device'].queryset = Device.objects.filter(
+            site=device_bay.device.site,
+            rack=device_bay.device.rack,
+            parent_bay__isnull=True,
+            device_type__u_height=0,
+            device_type__subdevice_role=SUBDEVICE_ROLE_CHILD
+        ).exclude(pk=device_bay.device.pk)
 
 
 #
@@ -1632,44 +1678,17 @@ class PopulateDeviceBayForm(BootstrapMixin, forms.Form):
 
 class ConsoleConnectionFilterForm(BootstrapMixin, forms.Form):
     site = forms.ModelChoiceField(required=False, queryset=Site.objects.all(), to_field_name='slug')
+    device = forms.CharField(required=False, label='Device name')
 
 
 class PowerConnectionFilterForm(BootstrapMixin, forms.Form):
     site = forms.ModelChoiceField(required=False, queryset=Site.objects.all(), to_field_name='slug')
+    device = forms.CharField(required=False, label='Device name')
 
 
 class InterfaceConnectionFilterForm(BootstrapMixin, forms.Form):
     site = forms.ModelChoiceField(required=False, queryset=Site.objects.all(), to_field_name='slug')
-
-
-#
-# IP addresses
-#
-
-class IPAddressForm(BootstrapMixin, CustomFieldForm):
-    set_as_primary = forms.BooleanField(label='Set as primary IP for device', required=False)
-
-    class Meta:
-        model = IPAddress
-        fields = ['address', 'vrf', 'tenant', 'status', 'interface', 'description']
-
-    def __init__(self, device, *args, **kwargs):
-
-        super(IPAddressForm, self).__init__(*args, **kwargs)
-
-        self.fields['vrf'].empty_label = 'Global'
-
-        interfaces = device.interfaces.all()
-        self.fields['interface'].queryset = interfaces
-        self.fields['interface'].required = True
-
-        # If this device has only one interface, select it by default.
-        if len(interfaces) == 1:
-            self.fields['interface'].initial = interfaces[0]
-
-        # If this device does not have any IP addresses assigned, default to setting the first IP as its primary.
-        if not IPAddress.objects.filter(interface__device=device).count():
-            self.fields['set_as_primary'].initial = True
+    device = forms.CharField(required=False, label='Device name')
 
 
 #

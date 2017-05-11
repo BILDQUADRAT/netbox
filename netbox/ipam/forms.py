@@ -6,7 +6,7 @@ from extras.forms import CustomFieldForm, CustomFieldBulkEditForm, CustomFieldFi
 from tenancy.models import Tenant
 from utilities.forms import (
     APISelect, BootstrapMixin, BulkImportForm, CSVDataField, ExpandableIPAddressField, FilterChoiceField, Livesearch,
-    SlugField, add_blank_choice,
+    ReturnURLForm, SlugField, add_blank_choice,
 )
 
 from .models import (
@@ -210,28 +210,33 @@ class PrefixFromCSVForm(forms.ModelForm):
         site = self.cleaned_data.get('site')
         vlan_group_name = self.cleaned_data.get('vlan_group_name')
         vlan_vid = self.cleaned_data.get('vlan_vid')
-
-        # Validate VLAN
         vlan_group = None
+        vlan = None
+
+        # Validate VLAN group
         if vlan_group_name:
             try:
                 vlan_group = VLANGroup.objects.get(site=site, name=vlan_group_name)
             except VLANGroup.DoesNotExist:
-                self.add_error('vlan_group_name', "Invalid VLAN group ({} - {}).".format(site, vlan_group_name))
-        if vlan_vid and vlan_group:
+                if site:
+                    self.add_error('vlan_group_name', "Invalid VLAN group ({} - {}).".format(site, vlan_group_name))
+                else:
+                    self.add_error('vlan_group_name', "Invalid global VLAN group ({}).".format(vlan_group_name))
+
+        # Validate VLAN
+        if vlan_vid:
             try:
-                self.instance.vlan = VLAN.objects.get(group=vlan_group, vid=vlan_vid)
+                self.instance.vlan = VLAN.objects.get(site=site, group=vlan_group, vid=vlan_vid)
             except VLAN.DoesNotExist:
-                self.add_error('vlan_vid', "Invalid VLAN ID ({} - {}).".format(vlan_group, vlan_vid))
-        elif vlan_vid and site:
-            try:
-                self.instance.vlan = VLAN.objects.get(site=site, vid=vlan_vid)
-            except VLAN.DoesNotExist:
-                self.add_error('vlan_vid', "Invalid VLAN ID ({}) for site {}.".format(vlan_vid, site))
+                if site:
+                    self.add_error('vlan_vid', "Invalid VLAN ID ({}) for site {}.".format(vlan_vid, site))
+                elif vlan_group:
+                    self.add_error('vlan_vid', "Invalid VLAN ID ({}) for group {}.".format(vlan_vid, vlan_group_name))
+                elif not vlan_group_name:
+                    self.add_error('vlan_vid', "Invalid global VLAN ID ({}).".format(vlan_vid))
             except VLAN.MultipleObjectsReturned:
                 self.add_error('vlan_vid', "Multiple VLANs found ({} - VID {})".format(site, vlan_vid))
-        elif vlan_vid:
-            self.add_error('vlan_vid', "Must specify site and/or VLAN group when assigning a VLAN.")
+            self.instance.vlan = vlan
 
     def save(self, *args, **kwargs):
 
@@ -302,21 +307,46 @@ class PrefixFilterForm(BootstrapMixin, CustomFieldFilterForm):
 # IP addresses
 #
 
-class IPAddressForm(BootstrapMixin, CustomFieldForm):
-    nat_site = forms.ModelChoiceField(queryset=Site.objects.all(), required=False, label='Site',
-                                      widget=forms.Select(attrs={'filter-for': 'nat_device'}))
-    nat_device = forms.ModelChoiceField(queryset=Device.objects.all(), required=False, label='Device',
-                                        widget=APISelect(api_url='/api/dcim/devices/?site_id={{nat_site}}',
-                                                         display_field='display_name',
-                                                         attrs={'filter-for': 'nat_inside'}))
-    livesearch = forms.CharField(required=False, label='IP Address', widget=Livesearch(
-        query_key='q', query_url='ipam-api:ipaddress_list', field_to_update='nat_inside', obj_label='address')
+class IPAddressForm(BootstrapMixin, ReturnURLForm, CustomFieldForm):
+    interface_site = forms.ModelChoiceField(
+        queryset=Site.objects.all(), required=False, label='Site', widget=forms.Select(
+            attrs={'filter-for': 'interface_rack'}
+        )
+    )
+    interface_rack = forms.ModelChoiceField(
+        queryset=Rack.objects.all(), required=False, label='Rack', widget=APISelect(
+            api_url='/api/dcim/racks/?site_id={{interface_site}}', display_field='display_name',
+            attrs={'filter-for': 'interface_device'}
+        )
+    )
+    interface_device = forms.ModelChoiceField(
+        queryset=Device.objects.all(), required=False, label='Device', widget=APISelect(
+            api_url='/api/dcim/devices/?site_id={{interface_site}}&rack_id={{interface_rack}}',
+            display_field='display_name', attrs={'filter-for': 'interface'}
+        )
+    )
+    nat_site = forms.ModelChoiceField(
+        queryset=Site.objects.all(), required=False, label='Site', widget=forms.Select(
+            attrs={'filter-for': 'nat_device'}
+        )
+    )
+    nat_device = forms.ModelChoiceField(
+        queryset=Device.objects.all(), required=False, label='Device', widget=APISelect(
+            api_url='/api/dcim/devices/?site_id={{nat_site}}', display_field='display_name',
+            attrs={'filter-for': 'nat_inside'}
+        )
+    )
+    livesearch = forms.CharField(
+        required=False, label='IP Address', widget=Livesearch(
+            query_key='q', query_url='ipam-api:ipaddress_list', field_to_update='nat_inside', obj_label='address'
+        )
     )
 
     class Meta:
         model = IPAddress
-        fields = ['address', 'vrf', 'tenant', 'status', 'nat_inside', 'description']
+        fields = ['address', 'vrf', 'tenant', 'status', 'interface', 'nat_inside', 'description']
         widgets = {
+            'interface': APISelect(api_url='/api/dcim/devices/{{interface_device}}/interfaces/'),
             'nat_inside': APISelect(api_url='/api/ipam/ip-addresses/?device_id={{nat_device}}', display_field='address')
         }
 
@@ -325,30 +355,58 @@ class IPAddressForm(BootstrapMixin, CustomFieldForm):
 
         self.fields['vrf'].empty_label = 'Global'
 
-        if self.instance.nat_inside:
+        # If an interface has been assigned, initialize site, rack, and device
+        if self.instance.interface:
+            self.initial['interface_site'] = self.instance.interface.device.site
+            self.initial['interface_rack'] = self.instance.interface.device.rack
+            self.initial['interface_device'] = self.instance.interface.device
 
+        # Limit rack choices
+        if self.is_bound and self.data.get('interface_site'):
+            self.fields['interface_rack'].queryset = Rack.objects.filter(site__pk=self.data['interface_site'])
+        elif self.initial.get('interface_site'):
+            self.fields['interface_rack'].queryset = Rack.objects.filter(site=self.initial['interface_site'])
+        else:
+            self.fields['interface_rack'].choices = []
+
+        # Limit device choices
+        if self.is_bound and self.data.get('interface_rack'):
+            self.fields['interface_device'].queryset = Device.objects.filter(rack=self.data['interface_rack'])
+        elif self.initial.get('interface_rack'):
+            self.fields['interface_device'].queryset = Device.objects.filter(rack=self.initial['interface_rack'])
+        else:
+            self.fields['interface_device'].choices = []
+
+        # Limit interface choices
+        if self.is_bound and self.data.get('interface_device'):
+            self.fields['interface'].queryset = Interface.objects.filter(device=self.data['interface_device'])
+        elif self.initial.get('interface_device'):
+            self.fields['interface'].queryset = Interface.objects.filter(device=self.initial['interface_device'])
+        else:
+            self.fields['interface'].choices = []
+
+        if self.instance.nat_inside:
             nat_inside = self.instance.nat_inside
             # If the IP is assigned to an interface, populate site/device fields accordingly
             if self.instance.nat_inside.interface:
                 self.initial['nat_site'] = self.instance.nat_inside.interface.device.site.pk
                 self.initial['nat_device'] = self.instance.nat_inside.interface.device.pk
                 self.fields['nat_device'].queryset = Device.objects.filter(
-                    rack__site=nat_inside.interface.device.site)
+                    site=nat_inside.interface.device.site
+                )
                 self.fields['nat_inside'].queryset = IPAddress.objects.filter(
-                    interface__device=nat_inside.interface.device)
+                    interface__device=nat_inside.interface.device
+                )
             else:
                 self.fields['nat_inside'].queryset = IPAddress.objects.filter(pk=nat_inside.pk)
-
         else:
-
             # Initialize nat_device choices if nat_site is set
             if self.is_bound and self.data.get('nat_site'):
-                self.fields['nat_device'].queryset = Device.objects.filter(rack__site__pk=self.data['nat_site'])
+                self.fields['nat_device'].queryset = Device.objects.filter(site__pk=self.data['nat_site'])
             elif self.initial.get('nat_site'):
-                self.fields['nat_device'].queryset = Device.objects.filter(rack__site=self.initial['nat_site'])
+                self.fields['nat_device'].queryset = Device.objects.filter(site=self.initial['nat_site'])
             else:
                 self.fields['nat_device'].choices = []
-
             # Initialize nat_inside choices if nat_device is set
             if self.is_bound and self.data.get('nat_device'):
                 self.fields['nat_inside'].queryset = IPAddress.objects.filter(
@@ -360,12 +418,15 @@ class IPAddressForm(BootstrapMixin, CustomFieldForm):
                 self.fields['nat_inside'].choices = []
 
 
-class IPAddressBulkAddForm(BootstrapMixin, forms.Form):
-    address = ExpandableIPAddressField()
+class IPAddressBulkAddForm(BootstrapMixin, CustomFieldForm):
+    address_pattern = ExpandableIPAddressField(label='Address Pattern')
     vrf = forms.ModelChoiceField(queryset=VRF.objects.all(), required=False, label='VRF', empty_label='Global')
-    tenant = forms.ModelChoiceField(queryset=Tenant.objects.all(), required=False)
-    status = forms.ChoiceField(choices=IPADDRESS_STATUS_CHOICES)
-    description = forms.CharField(max_length=100, required=False)
+
+    pattern_map = ('address_pattern', 'address')
+
+    class Meta:
+        model = IPAddress
+        fields = ['address_pattern', 'vrf', 'tenant', 'status', 'description']
 
 
 class IPAddressAssignForm(BootstrapMixin, forms.Form):
@@ -584,27 +645,51 @@ class VLANForm(BootstrapMixin, CustomFieldForm):
 
 
 class VLANFromCSVForm(forms.ModelForm):
-    site = forms.ModelChoiceField(queryset=Site.objects.all(), required=False, to_field_name='name',
-                                  error_messages={'invalid_choice': 'Site not found.'})
-    group = forms.ModelChoiceField(queryset=VLANGroup.objects.all(), required=False, to_field_name='name',
-                                   error_messages={'invalid_choice': 'VLAN group not found.'})
-    tenant = forms.ModelChoiceField(Tenant.objects.all(), to_field_name='name', required=False,
-                                    error_messages={'invalid_choice': 'Tenant not found.'})
+    site = forms.ModelChoiceField(
+        queryset=Site.objects.all(), required=False, to_field_name='name',
+        error_messages={'invalid_choice': 'Site not found.'}
+    )
+    group_name = forms.CharField(required=False)
+    tenant = forms.ModelChoiceField(
+        Tenant.objects.all(), to_field_name='name', required=False,
+        error_messages={'invalid_choice': 'Tenant not found.'}
+    )
     status_name = forms.ChoiceField(choices=[(s[1], s[0]) for s in VLAN_STATUS_CHOICES])
-    role = forms.ModelChoiceField(queryset=Role.objects.all(), required=False, to_field_name='name',
-                                  error_messages={'invalid_choice': 'Invalid role.'})
+    role = forms.ModelChoiceField(
+        queryset=Role.objects.all(), required=False, to_field_name='name',
+        error_messages={'invalid_choice': 'Invalid role.'}
+    )
 
     class Meta:
         model = VLAN
-        fields = ['site', 'group', 'vid', 'name', 'tenant', 'status_name', 'role', 'description']
+        fields = ['site', 'group_name', 'vid', 'name', 'tenant', 'status_name', 'role', 'description']
+
+    def clean(self):
+
+        super(VLANFromCSVForm, self).clean()
+
+        # Validate VLANGroup
+        group_name = self.cleaned_data.get('group_name')
+        if group_name:
+            try:
+                vlan_group = VLANGroup.objects.get(site=self.cleaned_data.get('site'), name=group_name)
+            except VLANGroup.DoesNotExist:
+                self.add_error('group_name', "Invalid VLAN group {}.".format(group_name))
 
     def save(self, *args, **kwargs):
-        m = super(VLANFromCSVForm, self).save(commit=False)
+
+        vlan = super(VLANFromCSVForm, self).save(commit=False)
+
+        # Assign VLANGroup by site and name
+        if self.cleaned_data['group_name']:
+            vlan.group = VLANGroup.objects.get(site=self.cleaned_data['site'], name=self.cleaned_data['group_name'])
+
         # Assign VLAN status by name
-        m.status = dict(self.fields['status_name'].choices)[self.cleaned_data['status_name']]
+        vlan.status = dict(self.fields['status_name'].choices)[self.cleaned_data['status_name']]
+
         if kwargs.get('commit'):
-            m.save()
-        return m
+            vlan.save()
+        return vlan
 
 
 class VLANImportForm(BootstrapMixin, BulkImportForm):
