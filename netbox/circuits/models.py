@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 from django.contrib.contenttypes.fields import GenericRelation
 from django.db import models
 from django.urls import reverse
@@ -49,6 +51,8 @@ class Provider(CreatedUpdatedModel, CustomFieldModel):
     admin_contact = models.TextField(blank=True, verbose_name='Admin contact')
     comments = models.TextField(blank=True)
     custom_field_values = GenericRelation(CustomFieldValue, content_type_field='obj_type', object_id_field='obj_id')
+
+    csv_headers = ['name', 'slug', 'asn', 'account', 'portal_url']
 
     class Meta:
         ordering = ['name']
@@ -105,12 +109,14 @@ class Circuit(CreatedUpdatedModel, CustomFieldModel):
     comments = models.TextField(blank=True)
     custom_field_values = GenericRelation(CustomFieldValue, content_type_field='obj_type', object_id_field='obj_id')
 
+    csv_headers = ['cid', 'provider', 'type', 'tenant', 'install_date', 'commit_rate', 'description']
+
     class Meta:
         ordering = ['provider', 'cid']
         unique_together = ['provider', 'cid']
 
     def __str__(self):
-        return u'{} {}'.format(self.provider, self.cid)
+        return '{} {}'.format(self.provider, self.cid)
 
     def get_absolute_url(self):
         return reverse('circuits:circuit', args=[self.pk])
@@ -166,7 +172,7 @@ class CircuitTermination(models.Model):
         unique_together = ['circuit', 'term_side']
 
     def __str__(self):
-        return u'{} (Side {})'.format(self.circuit, self.get_term_side_display())
+        return '{} (Side {})'.format(self.circuit, self.get_term_side_display())
 
     def get_peer_termination(self):
         peer_side = 'Z' if self.term_side == 'A' else 'A'

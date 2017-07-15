@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 import django_filters
 from netaddr.core import AddrFormatError
 
@@ -476,6 +478,11 @@ class InterfaceFilter(DeviceComponentFilterSet):
     type = django_filters.CharFilter(
         method='filter_type',
         label='Interface type',
+    )
+    lag_id = django_filters.ModelMultipleChoiceFilter(
+        name='lag',
+        queryset=Interface.objects.all(),
+        label='LAG interface (ID)',
     )
     mac_address = django_filters.CharFilter(
         method='_mac_address',

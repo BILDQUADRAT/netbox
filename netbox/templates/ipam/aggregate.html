@@ -1,5 +1,4 @@
 {% extends '_base.html' %}
-{% load render_table from django_tables2 %}
 
 {% block title %}Aggregate: {{ aggregate }}{% endblock %}
 
@@ -56,6 +55,12 @@
                     <td>RIR</td>
                     <td>
                         <a href="{% url 'ipam:aggregate_list' %}?rir={{ aggregate.rir.slug }}">{{ aggregate.rir }}</a>
+                    </td>
+                </tr>
+                <tr>
+                    <td>Utilization</td>
+                    <td>
+                        {{ aggregate.get_utilization }}%
                     </td>
                 </tr>
                 <tr>

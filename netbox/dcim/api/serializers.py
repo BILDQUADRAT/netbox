@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 from rest_framework import serializers
 from rest_framework.validators import UniqueTogetherValidator
 
@@ -581,9 +583,18 @@ class WritablePowerPortSerializer(serializers.ModelSerializer):
 # Interfaces
 #
 
+class NestedInterfaceSerializer(serializers.ModelSerializer):
+    url = serializers.HyperlinkedIdentityField(view_name='dcim-api:interface-detail')
+
+    class Meta:
+        model = Interface
+        fields = ['id', 'url', 'name']
+
+
 class InterfaceSerializer(serializers.ModelSerializer):
     device = NestedDeviceSerializer()
     form_factor = ChoiceFieldSerializer(choices=IFACE_FF_CHOICES)
+    lag = NestedInterfaceSerializer()
     connection = serializers.SerializerMethodField(read_only=True)
     connected_interface = serializers.SerializerMethodField(read_only=True)
 
@@ -608,10 +619,12 @@ class InterfaceSerializer(serializers.ModelSerializer):
 class PeerInterfaceSerializer(serializers.ModelSerializer):
     url = serializers.HyperlinkedIdentityField(view_name='dcim-api:interface-detail')
     device = NestedDeviceSerializer()
+    form_factor = ChoiceFieldSerializer(choices=IFACE_FF_CHOICES)
+    lag = NestedInterfaceSerializer()
 
     class Meta:
         model = Interface
-        fields = ['id', 'url', 'device', 'name', 'form_factor', 'mac_address', 'mgmt_only', 'description']
+        fields = ['id', 'url', 'device', 'name', 'form_factor', 'lag', 'mac_address', 'mgmt_only', 'description']
 
 
 class WritableInterfaceSerializer(serializers.ModelSerializer):

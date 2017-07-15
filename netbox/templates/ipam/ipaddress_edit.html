@@ -13,10 +13,16 @@
         <div class="panel-heading"><strong>IP Address</strong></div>
         <div class="panel-body">
             {% render_field form.address %}
-            {% render_field form.vrf %}
-            {% render_field form.tenant %}
             {% render_field form.status %}
+            {% render_field form.vrf %}
             {% render_field form.description %}
+        </div>
+    </div>
+    <div class="panel panel-default">
+        <div class="panel-heading"><strong>Tenancy</strong></div>
+        <div class="panel-body">
+            {% render_field form.tenant_group %}
+            {% render_field form.tenant %}
         </div>
     </div>
     <div class="panel panel-default">
@@ -41,6 +47,7 @@
             <div class="tab-content">
                 <div class="tab-pane active" id="select">
                     {% render_field form.nat_site %}
+                    {% render_field form.nat_rack %}
                     {% render_field form.nat_device %}
                 </div>
                 <div class="tab-pane" id="search">

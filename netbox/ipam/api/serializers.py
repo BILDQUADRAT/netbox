@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 from rest_framework import serializers
 from rest_framework.validators import UniqueTogetherValidator
 
@@ -135,7 +137,7 @@ class WritableVLANGroupSerializer(serializers.ModelSerializer):
         # Validate uniqueness of name and slug if a site has been assigned.
         if data.get('site', None):
             for field in ['name', 'slug']:
-                validator = UniqueTogetherValidator(queryset=VLAN.objects.all(), fields=('site', field))
+                validator = UniqueTogetherValidator(queryset=VLANGroup.objects.all(), fields=('site', field))
                 validator.set_context(self)
                 validator(data)
 

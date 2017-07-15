@@ -5,6 +5,25 @@
 # Once the script completes, remember to restart the WSGI service (e.g.
 # gunicorn or uWSGI).
 
+# Determine which version of Python/pip to use. Default to v3 (if available)
+# but allow the user to force v2.
+PYTHON="python3"
+PIP="pip3"
+type $PYTHON >/dev/null 2>&1 && type $PIP >/dev/null 2>&1 || PYTHON="python" PIP="pip"
+while getopts ":2" opt; do
+    case $opt in
+        2)
+            PYTHON="python"
+            PIP="pip"
+            echo "Forcing Python/pip v2"
+            ;;
+        \?)
+            echo "Invalid option: -$OPTARG" >&2
+            exit
+            ;;
+    esac
+done
+
 # Optionally use sudo if not already root, and always prompt for password
 # before running the command
 PREFIX="sudo -k "
@@ -20,21 +39,17 @@ COMMAND="${PREFIX}find . -name \"*.pyc\" -delete"
 echo "Cleaning up stale Python bytecode ($COMMAND)..."
 eval $COMMAND
 
-# Fall back to pip3 if pip is missing
-PIP="pip"
-type $PIP >/dev/null 2>&1 || PIP="pip3"
-
 # Install any new Python packages
 COMMAND="${PREFIX}${PIP} install -r requirements.txt --upgrade"
 echo "Updating required Python packages ($COMMAND)..."
 eval $COMMAND
 
 # Apply any database migrations
-COMMAND="./netbox/manage.py migrate"
-echo "Updating required Python packages ($COMMAND)..."
+COMMAND="${PYTHON} netbox/manage.py migrate"
+echo "Applying database migrations ($COMMAND)..."
 eval $COMMAND
 
 # Collect static files
-COMMAND="./netbox/manage.py collectstatic --no-input"
+COMMAND="${PYTHON} netbox/manage.py collectstatic --no-input"
 echo "Collecting static files ($COMMAND)..."
 eval $COMMAND

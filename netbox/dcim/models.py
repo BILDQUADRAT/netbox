@@ -1,3 +1,4 @@
+from __future__ import unicode_literals
 from collections import OrderedDict
 from itertools import count, groupby
 
@@ -23,7 +24,6 @@ from utilities.fields import ColorField, NullableCharField
 from utilities.managers import NaturalOrderByManager
 from utilities.models import CreatedUpdatedModel
 from utilities.utils import csv_format
-
 from .fields import ASNField, MACAddressField
 
 
@@ -280,6 +280,10 @@ class Site(CreatedUpdatedModel, CustomFieldModel):
 
     objects = SiteManager()
 
+    csv_headers = [
+        'name', 'slug', 'region', 'tenant', 'facility', 'asn', 'contact_name', 'contact_phone', 'contact_email',
+    ]
+
     class Meta:
         ordering = ['name']
 
@@ -346,7 +350,7 @@ class RackGroup(models.Model):
         ]
 
     def __str__(self):
-        return u'{} - {}'.format(self.site.name, self.name)
+        return self.name
 
     def get_absolute_url(self):
         return "{}?group_id={}".format(reverse('dcim:rack_list'), self.pk)
@@ -402,6 +406,10 @@ class Rack(CreatedUpdatedModel, CustomFieldModel):
 
     objects = RackManager()
 
+    csv_headers = [
+        'site', 'group_name', 'name', 'facility_id', 'tenant', 'role', 'type', 'width', 'u_height', 'desc_units',
+    ]
+
     class Meta:
         ordering = ['site', 'name']
         unique_together = [
@@ -410,7 +418,7 @@ class Rack(CreatedUpdatedModel, CustomFieldModel):
         ]
 
     def __str__(self):
-        return self.display_name
+        return self.display_name or super(Rack, self).__str__()
 
     def get_absolute_url(self):
         return reverse('dcim:rack', args=[self.pk])
@@ -466,8 +474,10 @@ class Rack(CreatedUpdatedModel, CustomFieldModel):
     @property
     def display_name(self):
         if self.facility_id:
-            return u"{} ({})".format(self.name, self.facility_id)
-        return self.name
+            return "{} ({})".format(self.name, self.facility_id)
+        elif self.name:
+            return self.name
+        return ""
 
     def get_rack_units(self, face=RACK_FACE_FRONT, exclude=None, remove_redundant=False):
         """
@@ -567,7 +577,7 @@ class RackReservation(models.Model):
         ordering = ['created']
 
     def __str__(self):
-        return u"Reservation for rack {}".format(self.rack)
+        return "Reservation for rack {}".format(self.rack)
 
     def clean(self):
 
@@ -577,7 +587,7 @@ class RackReservation(models.Model):
             invalid_units = [u for u in self.units if u not in self.rack.units]
             if invalid_units:
                 raise ValidationError({
-                    'units': u"Invalid unit(s) for {}U rack: {}".format(
+                    'units': "Invalid unit(s) for {}U rack: {}".format(
                         self.rack.u_height,
                         ', '.join([str(u) for u in invalid_units]),
                     ),
@@ -731,7 +741,7 @@ class DeviceType(models.Model, CustomFieldModel):
 
     @property
     def full_name(self):
-        return u'{} {}'.format(self.manufacturer.name, self.model)
+        return '{} {}'.format(self.manufacturer.name, self.model)
 
     @property
     def is_parent_device(self):
@@ -810,13 +820,13 @@ class InterfaceManager(models.Manager):
 
     def order_naturally(self, method=IFACE_ORDERING_POSITION):
         """
-        Naturally order interfaces by their name and numeric position. The sort method must be one of the defined
+        Naturally order interfaces by their type and numeric position. The sort method must be one of the defined
         IFACE_ORDERING_CHOICES (typically indicated by a parent Device's DeviceType).
 
-        To order interfaces naturally, the `name` field is split into five distinct components: leading text (name),
+        To order interfaces naturally, the `name` field is split into six distinct components: leading text (type),
         slot, subslot, position, channel, and virtual circuit:
 
-            {name}{slot}/{subslot}/{position}:{channel}.{vc}
+            {type}{slot}/{subslot}/{position}:{channel}.{vc}
 
         Components absent from the interface name are ignored. For example, an interface named GigabitEthernet0/1 would
         be parsed as follows:
@@ -828,16 +838,17 @@ class InterfaceManager(models.Manager):
             channel = None
             vc = 0
 
-        The chosen sorting method will determine which fields are ordered first in the query.
+        The original `name` field is taken as a whole to serve as a fallback in the event interfaces do not match any of
+        the prescribed fields.
         """
         queryset = self.get_queryset()
         sql_col = '{}.name'.format(queryset.model._meta.db_table)
         ordering = {
-            IFACE_ORDERING_POSITION: ('_slot', '_subslot', '_position', '_channel', '_vc', '_name'),
-            IFACE_ORDERING_NAME: ('_name', '_slot', '_subslot', '_position', '_channel', '_vc'),
+            IFACE_ORDERING_POSITION: ('_slot', '_subslot', '_position', '_channel', '_vc', '_type', 'name'),
+            IFACE_ORDERING_NAME: ('_type', '_slot', '_subslot', '_position', '_channel', '_vc', 'name'),
         }[method]
         return queryset.extra(select={
-            '_name': "SUBSTRING({} FROM '^([^0-9]+)')".format(sql_col),
+            '_type': "SUBSTRING({} FROM '^([^0-9]+)')".format(sql_col),
             '_slot': "CAST(SUBSTRING({} FROM '([0-9]+)\/[0-9]+\/[0-9]+(:[0-9]+)?(\.[0-9]+)?$') AS integer)".format(sql_col),
             '_subslot': "CAST(SUBSTRING({} FROM '([0-9]+)\/[0-9]+(:[0-9]+)?(\.[0-9]+)?$') AS integer)".format(sql_col),
             '_position': "CAST(SUBSTRING({} FROM '([0-9]+)(:[0-9]+)?(\.[0-9]+)?$') AS integer)".format(sql_col),
@@ -978,12 +989,17 @@ class Device(CreatedUpdatedModel, CustomFieldModel):
 
     objects = DeviceManager()
 
+    csv_headers = [
+        'name', 'device_role', 'tenant', 'manufacturer', 'model_name', 'platform', 'serial', 'asset_tag', 'status',
+        'site', 'rack_group', 'rack_name', 'position', 'face',
+    ]
+
     class Meta:
         ordering = ['name']
         unique_together = ['rack', 'position', 'face']
 
     def __str__(self):
-        return self.display_name
+        return self.display_name or super(Device, self).__str__()
 
     def get_absolute_url(self):
         return reverse('dcim:device', args=[self.pk])
@@ -1093,6 +1109,7 @@ class Device(CreatedUpdatedModel, CustomFieldModel):
             self.asset_tag,
             self.get_status_display(),
             self.site.name,
+            self.rack.group.name if self.rack and self.rack.group else None,
             self.rack.name if self.rack else None,
             self.position,
             self.get_face_display(),
@@ -1102,12 +1119,9 @@ class Device(CreatedUpdatedModel, CustomFieldModel):
     def display_name(self):
         if self.name:
             return self.name
-        elif self.position:
-            return u"{} ({} U{})".format(self.device_type, self.rack.name, self.position)
-        elif self.rack:
-            return u"{} ({})".format(self.device_type, self.rack.name)
-        else:
-            return u"{} ({})".format(self.device_type, self.site.name)
+        elif hasattr(self, 'device_type'):
+            return "{}".format(self.device_type)
+        return ""
 
     @property
     def identifier(self):
@@ -1161,6 +1175,8 @@ class ConsolePort(models.Model):
     cs_port = models.OneToOneField('ConsoleServerPort', related_name='connected_console', on_delete=models.SET_NULL,
                                    verbose_name='Console server port', blank=True, null=True)
     connection_status = models.NullBooleanField(choices=CONNECTION_STATUS_CHOICES, default=CONNECTION_STATUS_CONNECTED)
+
+    csv_headers = ['console_server', 'cs_port', 'device', 'console_port', 'connection_status']
 
     class Meta:
         ordering = ['device', 'name']
@@ -1230,6 +1246,8 @@ class PowerPort(models.Model):
     power_outlet = models.OneToOneField('PowerOutlet', related_name='connected_port', on_delete=models.SET_NULL,
                                         blank=True, null=True)
     connection_status = models.NullBooleanField(choices=CONNECTION_STATUS_CHOICES, default=CONNECTION_STATUS_CONNECTED)
+
+    csv_headers = ['pdu', 'power_outlet', 'device', 'power_port', 'connection_status']
 
     class Meta:
         ordering = ['device', 'name']
@@ -1320,7 +1338,7 @@ class Interface(models.Model):
         # An interface's LAG must belong to the same device
         if self.lag and self.lag.device != self.device:
             raise ValidationError({
-                'lag': u"The selected LAG interface ({}) belongs to a different device ({}).".format(
+                'lag': "The selected LAG interface ({}) belongs to a different device ({}).".format(
                     self.lag.name, self.lag.device.name
                 )
             })
@@ -1328,14 +1346,14 @@ class Interface(models.Model):
         # A virtual interface cannot have a parent LAG
         if self.form_factor in VIRTUAL_IFACE_TYPES and self.lag is not None:
             raise ValidationError({
-                'lag': u"{} interfaces cannot have a parent LAG interface.".format(self.get_form_factor_display())
+                'lag': "{} interfaces cannot have a parent LAG interface.".format(self.get_form_factor_display())
             })
 
         # Only a LAG can have LAG members
         if self.form_factor != IFACE_FF_LAG and self.member_interfaces.exists():
             raise ValidationError({
                 'form_factor': "Cannot change interface form factor; it has LAG members ({}).".format(
-                    u", ".join([iface.name for iface in self.member_interfaces.all()])
+                    ", ".join([iface.name for iface in self.member_interfaces.all()])
                 )
             })
 
@@ -1392,11 +1410,16 @@ class InterfaceConnection(models.Model):
     connection_status = models.BooleanField(choices=CONNECTION_STATUS_CHOICES, default=CONNECTION_STATUS_CONNECTED,
                                             verbose_name='Status')
 
+    csv_headers = ['device_a', 'interface_a', 'device_b', 'interface_b', 'connection_status']
+
     def clean(self):
-        if self.interface_a == self.interface_b:
-            raise ValidationError({
-                'interface_b': "Cannot connect an interface to itself."
-            })
+        try:
+            if self.interface_a == self.interface_b:
+                raise ValidationError({
+                    'interface_b': "Cannot connect an interface to itself."
+                })
+        except ObjectDoesNotExist:
+            pass
 
     # Used for connections export
     def to_csv(self):
@@ -1428,7 +1451,7 @@ class DeviceBay(models.Model):
         unique_together = ['device', 'name']
 
     def __str__(self):
-        return u'{} - {}'.format(self.device.name, self.name)
+        return '{} - {}'.format(self.device.name, self.name)
 
     def clean(self):
 

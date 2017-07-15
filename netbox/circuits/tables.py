@@ -1,8 +1,9 @@
+from __future__ import unicode_literals
+
 import django_tables2 as tables
 from django_tables2.utils import Accessor
 
 from utilities.tables import BaseTable, SearchTable, ToggleColumn
-
 from .models import Circuit, CircuitType, Provider
 
 
@@ -79,7 +80,13 @@ class CircuitSearchTable(SearchTable):
     cid = tables.LinkColumn(verbose_name='ID')
     provider = tables.LinkColumn('circuits:provider', args=[Accessor('provider.slug')])
     tenant = tables.LinkColumn('tenancy:tenant', args=[Accessor('tenant.slug')])
+    a_side = tables.LinkColumn(
+        'dcim:site', accessor=Accessor('termination_a.site'), args=[Accessor('termination_a.site.slug')]
+    )
+    z_side = tables.LinkColumn(
+        'dcim:site', accessor=Accessor('termination_z.site'), args=[Accessor('termination_z.site.slug')]
+    )
 
     class Meta(SearchTable.Meta):
         model = Circuit
-        fields = ('cid', 'type', 'provider', 'tenant', 'description')
+        fields = ('cid', 'type', 'provider', 'tenant', 'a_side', 'z_side', 'description')

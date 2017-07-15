@@ -1,3 +1,4 @@
+from __future__ import unicode_literals
 from collections import OrderedDict
 from datetime import date
 import graphviz
@@ -12,6 +13,8 @@ from django.http import HttpResponse
 from django.template import Template, Context
 from django.utils.encoding import python_2_unicode_compatible
 from django.utils.safestring import mark_safe
+
+from utilities.utils import foreground_color
 
 
 CUSTOMFIELD_MODELS = (
@@ -136,7 +139,11 @@ class CustomField(models.Model):
         if self.type == CF_TYPE_BOOLEAN:
             return str(int(bool(value)))
         if self.type == CF_TYPE_DATE:
-            return value.strftime('%Y-%m-%d')
+            # Could be date/datetime object or string
+            try:
+                return value.strftime('%Y-%m-%d')
+            except AttributeError:
+                return value
         if self.type == CF_TYPE_SELECT:
             # Could be ModelChoiceField or TypedChoiceField
             return str(value.id) if hasattr(value, 'id') else str(value)
@@ -173,7 +180,7 @@ class CustomFieldValue(models.Model):
         unique_together = ['field', 'obj_type', 'obj_id']
 
     def __str__(self):
-        return u'{} {}'.format(self.obj, self.field)
+        return '{} {}'.format(self.obj, self.field)
 
     @property
     def value(self):
@@ -267,7 +274,7 @@ class ExportTemplate(models.Model):
         ]
 
     def __str__(self):
-        return u'{}: {}'.format(self.content_type, self.name)
+        return '{}: {}'.format(self.content_type, self.name)
 
     def to_response(self, context_dict, filename):
         """
@@ -316,7 +323,7 @@ class TopologyMap(models.Model):
     def render(self, img_format='png'):
 
         from circuits.models import CircuitTermination
-        from dcim.models import Device, InterfaceConnection
+        from dcim.models import CONNECTION_STATUS_CONNECTED, Device, InterfaceConnection
 
         # Construct the graph
         graph = graphviz.Graph()
@@ -336,8 +343,9 @@ class TopologyMap(models.Model):
             for query in device_set.split(';'):  # Split regexes on semicolons
                 devices += Device.objects.filter(name__regex=query).select_related('device_role')
             for d in devices:
-                fillcolor = '#{}'.format(d.device_role.color)
-                subgraph.node(d.name, style='filled', fillcolor=fillcolor)
+                bg_color = '#{}'.format(d.device_role.color)
+                fg_color = '#{}'.format(foreground_color(d.device_role.color))
+                subgraph.node(d.name, style='filled', fillcolor=bg_color, fontcolor=fg_color, fontname='sans')
 
             # Add an invisible connection to each successive device in a set to enforce horizontal order
             for j in range(0, len(devices) - 1):
@@ -357,12 +365,14 @@ class TopologyMap(models.Model):
             interface_a__device__in=devices, interface_b__device__in=devices
         )
         for c in connections:
-            graph.edge(c.interface_a.device.name, c.interface_b.device.name)
+            style = 'solid' if c.connection_status == CONNECTION_STATUS_CONNECTED else 'dashed'
+            graph.edge(c.interface_a.device.name, c.interface_b.device.name, style=style)
 
         # Add all circuits to the graph
         for termination in CircuitTermination.objects.filter(term_side='A', interface__device__in=devices):
             peer_termination = termination.get_peer_termination()
-            if peer_termination is not None and peer_termination.interface.device in devices:
+            if (peer_termination is not None and peer_termination.interface is not None and
+                    peer_termination.interface.device in devices):
                 graph.edge(termination.interface.device.name, peer_termination.interface.device.name, color='blue')
 
         return graph.pipe(format=img_format)
@@ -377,13 +387,13 @@ def image_upload(instance, filename):
     path = 'image-attachments/'
 
     # Rename the file to the provided name, if any. Attempt to preserve the file extension.
-    extension = filename.rsplit('.')[-1]
+    extension = filename.rsplit('.')[-1].lower()
     if instance.name and extension in ['bmp', 'gif', 'jpeg', 'jpg', 'png']:
         filename = '.'.join([instance.name, extension])
     elif instance.name:
         filename = instance.name
 
-    return u'{}{}_{}_{}'.format(path, instance.content_type.name, instance.object_id, filename)
+    return '{}{}_{}_{}'.format(path, instance.content_type.name, instance.object_id, filename)
 
 
 @python_2_unicode_compatible
@@ -499,8 +509,8 @@ class UserAction(models.Model):
 
     def __str__(self):
         if self.message:
-            return u'{} {}'.format(self.user, self.message)
-        return u'{} {} {}'.format(self.user, self.get_action_display(), self.content_type)
+            return '{} {}'.format(self.user, self.message)
+        return '{} {} {}'.format(self.user, self.get_action_display(), self.content_type)
 
     def icon(self):
         if self.action in [ACTION_CREATE, ACTION_BULK_CREATE, ACTION_IMPORT]:

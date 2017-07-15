@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 import django_filters
 
 from django.contrib.auth.models import User
@@ -30,7 +32,7 @@ class CustomFieldFilter(django_filters.Filter):
             pass
         return queryset.filter(
             custom_field_values__field__name=self.name,
-            custom_field_values__serialized_value=value,
+            custom_field_values__serialized_value__icontains=value,
         )
 
 

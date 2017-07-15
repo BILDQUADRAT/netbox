@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 import django_filters
 from netaddr import IPNetwork
 from netaddr.core import AddrFormatError
@@ -8,7 +10,6 @@ from dcim.models import Site, Device, Interface
 from extras.filters import CustomFieldFilterSet
 from tenancy.models import Tenant
 from utilities.filters import NullableModelMultipleChoiceFilter, NumericInFilter
-
 from .models import (
     Aggregate, IPAddress, IPADDRESS_STATUS_CHOICES, Prefix, PREFIX_STATUS_CHOICES, RIR, Role, Service, VLAN,
     VLAN_STATUS_CHOICES, VLANGroup, VRF,
@@ -84,7 +85,7 @@ class AggregateFilter(CustomFieldFilterSet, django_filters.FilterSet):
         try:
             prefix = str(IPNetwork(value.strip()).cidr)
             qs_filter |= Q(prefix__net_contains_or_equals=prefix)
-        except AddrFormatError:
+        except (AddrFormatError, ValueError):
             pass
         return queryset.filter(qs_filter)
 
@@ -171,7 +172,7 @@ class PrefixFilter(CustomFieldFilterSet, django_filters.FilterSet):
         try:
             prefix = str(IPNetwork(value.strip()).cidr)
             qs_filter |= Q(prefix__net_contains_or_equals=prefix)
-        except AddrFormatError:
+        except (AddrFormatError, ValueError):
             pass
         return queryset.filter(qs_filter)
 
@@ -182,7 +183,7 @@ class PrefixFilter(CustomFieldFilterSet, django_filters.FilterSet):
         try:
             query = str(IPNetwork(value).cidr)
             return queryset.filter(prefix__net_contained_or_equal=query)
-        except AddrFormatError:
+        except (AddrFormatError, ValueError):
             return queryset.none()
 
     def filter_mask_length(self, queryset, name, value):
@@ -258,7 +259,7 @@ class IPAddressFilter(CustomFieldFilterSet, django_filters.FilterSet):
         try:
             ipaddress = str(IPNetwork(value.strip()))
             qs_filter |= Q(address__net_host=ipaddress)
-        except AddrFormatError:
+        except (AddrFormatError, ValueError):
             pass
         return queryset.filter(qs_filter)
 
@@ -269,7 +270,7 @@ class IPAddressFilter(CustomFieldFilterSet, django_filters.FilterSet):
         try:
             query = str(IPNetwork(value.strip()).cidr)
             return queryset.filter(address__net_host_contained=query)
-        except AddrFormatError:
+        except (AddrFormatError, ValueError):
             return queryset.none()
 
     def filter_mask_length(self, queryset, name, value):

@@ -3,7 +3,7 @@
 We'll set up a simple WSGI front end using [gunicorn](http://gunicorn.org/) for the purposes of this guide. For web servers, we provide example configurations for both [nginx](https://www.nginx.com/resources/wiki/) and [Apache](http://httpd.apache.org/docs/2.4). (You are of course free to use whichever combination of HTTP and WSGI services you'd like.) We'll also use [supervisord](http://supervisord.org/) to enable service persistence.
 
 !!! info
-    Only Debian/Ubuntu instructions are provided here, but the installation process for CentOS/RHEL does not differ much. Please consult the documentation for those distributions for details.
+    For the sake of brevity, only Ubuntu 16.04 instructions are provided here, but this sort of web server and WSGI configuration is not unique to NetBox. Please consult your distribution's documentation for assistance if needed.
 
 ```no-highlight
 # apt-get install -y gunicorn supervisor
@@ -25,7 +25,7 @@ server {
 
     server_name netbox.example.com;
 
-    access_log off;
+    client_max_body_size 25m;
 
     location /static/ {
         alias /opt/netbox/netbox/static/;
@@ -72,6 +72,9 @@ Once Apache is installed, proceed with the following configuration (Be sure to m
     ServerName netbox.example.com
 
     Alias /static /opt/netbox/netbox/static
+
+    # Needed to allow token-based API authentication
+    WSGIPassAuthorization on
 
     <Directory /opt/netbox/netbox/static>
         Options Indexes FollowSymLinks MultiViews

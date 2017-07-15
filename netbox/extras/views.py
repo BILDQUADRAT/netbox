@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.shortcuts import get_object_or_404
 
@@ -23,7 +25,7 @@ class ImageAttachmentEditView(PermissionRequiredMixin, ObjectEditView):
 
 
 class ImageAttachmentDeleteView(PermissionRequiredMixin, ObjectDeleteView):
-    permission_required = 'dcim.delete_imageattachment'
+    permission_required = 'extras.delete_imageattachment'
     model = ImageAttachment
 
     def get_return_url(self, request, imageattachment):

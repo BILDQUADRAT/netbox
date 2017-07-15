@@ -1,4 +1,6 @@
-from netaddr import IPNetwork, cidr_merge
+from __future__ import unicode_literals
+
+from netaddr import IPNetwork, IPSet
 
 from django.conf import settings
 from django.contrib.contenttypes.fields import GenericRelation
@@ -15,7 +17,6 @@ from tenancy.models import Tenant
 from utilities.models import CreatedUpdatedModel
 from utilities.sql import NullsFirstQuerySet
 from utilities.utils import csv_format
-
 from .fields import IPNetworkField, IPAddressField
 
 
@@ -88,6 +89,8 @@ class VRF(CreatedUpdatedModel, CustomFieldModel):
     description = models.CharField(max_length=100, blank=True)
     custom_field_values = GenericRelation(CustomFieldValue, content_type_field='obj_type', object_id_field='obj_id')
 
+    csv_headers = ['name', 'rd', 'tenant', 'enforce_unique', 'description']
+
     class Meta:
         ordering = ['name']
         verbose_name = 'VRF'
@@ -145,6 +148,8 @@ class Aggregate(CreatedUpdatedModel, CustomFieldModel):
     description = models.CharField(max_length=100, blank=True)
     custom_field_values = GenericRelation(CustomFieldValue, content_type_field='obj_type', object_id_field='obj_id')
 
+    csv_headers = ['prefix', 'rir', 'date_added', 'description']
+
     class Meta:
         ordering = ['family', 'prefix']
 
@@ -199,15 +204,11 @@ class Aggregate(CreatedUpdatedModel, CustomFieldModel):
 
     def get_utilization(self):
         """
-        Determine the utilization rate of the aggregate prefix and return it as a percentage.
+        Determine the prefix utilization of the aggregate and return it as a percentage.
         """
-        child_prefixes = Prefix.objects.filter(prefix__net_contained_or_equal=str(self.prefix))
-        # Remove overlapping prefixes from list of children
-        networks = cidr_merge([c.prefix for c in child_prefixes])
-        children_size = float(0)
-        for p in networks:
-            children_size += p.size
-        return int(children_size / self.prefix.size * 100)
+        queryset = Prefix.objects.filter(prefix__net_contained_or_equal=str(self.prefix))
+        child_prefixes = IPSet([p.prefix for p in queryset])
+        return int(float(child_prefixes.size) / self.prefix.size * 100)
 
 
 @python_2_unicode_compatible
@@ -296,6 +297,10 @@ class Prefix(CreatedUpdatedModel, CustomFieldModel):
 
     objects = PrefixQuerySet.as_manager()
 
+    csv_headers = [
+        'prefix', 'vrf', 'tenant', 'site', 'vlan_group', 'vlan_vid', 'status', 'role', 'is_pool', 'description',
+    ]
+
     class Meta:
         ordering = ['vrf', 'family', 'prefix']
         verbose_name_plural = 'prefixes'
@@ -305,9 +310,6 @@ class Prefix(CreatedUpdatedModel, CustomFieldModel):
 
     def get_absolute_url(self):
         return reverse('ipam:prefix', args=[self.pk])
-
-    def get_duplicates(self):
-        return Prefix.objects.filter(vrf=self.vrf, prefix=str(self.prefix)).exclude(pk=self.pk)
 
     def clean(self):
 
@@ -356,6 +358,30 @@ class Prefix(CreatedUpdatedModel, CustomFieldModel):
             self.description,
         ])
 
+    def get_status_class(self):
+        return STATUS_CHOICE_CLASSES[self.status]
+
+    def get_duplicates(self):
+        return Prefix.objects.filter(vrf=self.vrf, prefix=str(self.prefix)).exclude(pk=self.pk)
+
+    def get_utilization(self):
+        """
+        Determine the utilization of the prefix and return it as a percentage. For Prefixes with a status of
+        "container", calculate utilization based on child prefixes. For all others, count child IP addresses.
+        """
+        if self.status == PREFIX_STATUS_CONTAINER:
+            queryset = Prefix.objects.filter(prefix__net_contained=str(self.prefix), vrf=self.vrf)
+            child_prefixes = IPSet([p.prefix for p in queryset])
+            return int(float(child_prefixes.size) / self.prefix.size * 100)
+        else:
+            child_count = IPAddress.objects.filter(
+                address__net_contained_or_equal=str(self.prefix), vrf=self.vrf
+            ).count()
+            prefix_size = self.prefix.size
+            if self.family == 4 and self.prefix.prefixlen < 31 and not self.is_pool:
+                prefix_size -= 2
+            return int(float(child_count) / prefix_size * 100)
+
     @property
     def new_subnet(self):
         if self.family == 4:
@@ -366,9 +392,6 @@ class Prefix(CreatedUpdatedModel, CustomFieldModel):
             if self.prefix.prefixlen <= 126:
                 return IPNetwork('{}/{}'.format(self.prefix.network, self.prefix.prefixlen + 1))
             return None
-
-    def get_status_class(self):
-        return STATUS_CHOICE_CLASSES[self.status]
 
 
 class IPAddressManager(models.Manager):
@@ -413,6 +436,8 @@ class IPAddress(CreatedUpdatedModel, CustomFieldModel):
 
     objects = IPAddressManager()
 
+    csv_headers = ['address', 'vrf', 'tenant', 'status', 'device', 'interface_name', 'is_primary', 'description']
+
     class Meta:
         ordering = ['family', 'address']
         verbose_name = 'IP address'
@@ -451,11 +476,12 @@ class IPAddress(CreatedUpdatedModel, CustomFieldModel):
     def to_csv(self):
 
         # Determine if this IP is primary for a Device
-        is_primary = False
         if self.family == 4 and getattr(self, 'primary_ip4_for', False):
             is_primary = True
         elif self.family == 6 and getattr(self, 'primary_ip6_for', False):
             is_primary = True
+        else:
+            is_primary = False
 
         return csv_format([
             self.address,
@@ -497,9 +523,7 @@ class VLANGroup(models.Model):
         verbose_name_plural = 'VLAN groups'
 
     def __str__(self):
-        if self.site is None:
-            return self.name
-        return u'{} - {}'.format(self.site.name, self.name)
+        return self.name
 
     def get_absolute_url(self):
         return "{}?group_id={}".format(reverse('ipam:vlan_list'), self.pk)
@@ -528,6 +552,8 @@ class VLAN(CreatedUpdatedModel, CustomFieldModel):
     description = models.CharField(max_length=100, blank=True)
     custom_field_values = GenericRelation(CustomFieldValue, content_type_field='obj_type', object_id_field='obj_id')
 
+    csv_headers = ['site', 'group_name', 'vid', 'name', 'tenant', 'status', 'role', 'description']
+
     class Meta:
         ordering = ['site', 'group', 'vid']
         unique_together = [
@@ -538,7 +564,7 @@ class VLAN(CreatedUpdatedModel, CustomFieldModel):
         verbose_name_plural = 'VLANs'
 
     def __str__(self):
-        return self.display_name
+        return self.display_name or super(VLAN, self).__str__()
 
     def get_absolute_url(self):
         return reverse('ipam:vlan', args=[self.pk])
@@ -565,7 +591,9 @@ class VLAN(CreatedUpdatedModel, CustomFieldModel):
 
     @property
     def display_name(self):
-        return u'{} ({})'.format(self.vid, self.name)
+        if self.vid and self.name:
+            return "{} ({})".format(self.vid, self.name)
+        return None
 
     def get_status_class(self):
         return STATUS_CHOICE_CLASSES[self.status]
@@ -591,4 +619,4 @@ class Service(CreatedUpdatedModel):
         unique_together = ['device', 'protocol', 'port']
 
     def __str__(self):
-        return u'{} ({}/{})'.format(self.name, self.port, self.get_protocol_display())
+        return '{} ({}/{})'.format(self.name, self.port, self.get_protocol_display())

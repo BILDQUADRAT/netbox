@@ -1,3 +1,4 @@
+from __future__ import unicode_literals
 import base64
 
 from django.contrib import messages
@@ -8,10 +9,12 @@ from django.db.models import Count
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils.decorators import method_decorator
+from django.views.generic import View
 
 from dcim.models import Device
-from utilities.views import BulkDeleteView, BulkEditView, ObjectDeleteView, ObjectEditView, ObjectListView
-
+from utilities.views import (
+    BulkDeleteView, BulkEditView, BulkImportView, ObjectDeleteView, ObjectEditView, ObjectListView,
+)
 from . import filters, forms, tables
 from .decorators import userkey_required
 from .models import SecretRole, Secret, SessionKey
@@ -37,13 +40,17 @@ class SecretRoleListView(ObjectListView):
     template_name = 'secrets/secretrole_list.html'
 
 
-class SecretRoleEditView(PermissionRequiredMixin, ObjectEditView):
-    permission_required = 'secrets.change_secretrole'
+class SecretRoleCreateView(PermissionRequiredMixin, ObjectEditView):
+    permission_required = 'secrets.add_secretrole'
     model = SecretRole
     form_class = forms.SecretRoleForm
 
     def get_return_url(self, request, obj):
         return reverse('secrets:secretrole_list')
+
+
+class SecretRoleEditView(SecretRoleCreateView):
+    permission_required = 'secrets.change_secretrole'
 
 
 class SecretRoleBulkDeleteView(PermissionRequiredMixin, BulkDeleteView):
@@ -65,14 +72,16 @@ class SecretListView(ObjectListView):
     template_name = 'secrets/secret_list.html'
 
 
-@login_required
-def secret(request, pk):
+@method_decorator(login_required, name='dispatch')
+class SecretView(View):
 
-    secret = get_object_or_404(Secret, pk=pk)
+    def get(self, request, pk):
 
-    return render(request, 'secrets/secret.html', {
-        'secret': secret,
-    })
+        secret = get_object_or_404(Secret, pk=pk)
+
+        return render(request, 'secrets/secret.html', {
+            'secret': secret,
+        })
 
 
 @permission_required('secrets.add_secret')
@@ -107,7 +116,7 @@ def secret_add(request, pk):
                     secret.plaintext = str(form.cleaned_data['plaintext'])
                     secret.encrypt(master_key)
                     secret.save()
-                    messages.success(request, u"Added new secret: {}.".format(secret))
+                    messages.success(request, "Added new secret: {}.".format(secret))
                     if '_addanother' in request.POST:
                         return redirect('dcim:device_addsecret', pk=device.pk)
                     else:
@@ -151,7 +160,7 @@ def secret_edit(request, pk):
                     secret.plaintext = str(form.cleaned_data['plaintext'])
                     secret.encrypt(master_key)
                     secret.save()
-                    messages.success(request, u"Modified secret {}.".format(secret))
+                    messages.success(request, "Modified secret {}.".format(secret))
                     return redirect('secrets:secret', pk=secret.pk)
                 else:
                     form.add_error(None, "Invalid session key. Unable to encrypt secret data.")
@@ -163,7 +172,7 @@ def secret_edit(request, pk):
             # If no new plaintext was specified, a session key is not needed.
             else:
                 secret = form.save()
-                messages.success(request, u"Modified secret {}.".format(secret))
+                messages.success(request, "Modified secret {}.".format(secret))
                 return redirect('secrets:secret', pk=secret.pk)
 
     else:
@@ -182,58 +191,50 @@ class SecretDeleteView(PermissionRequiredMixin, ObjectDeleteView):
     default_return_url = 'secrets:secret_list'
 
 
-@permission_required('secrets.add_secret')
-@userkey_required()
-def secret_import(request):
+class SecretBulkImportView(BulkImportView):
+    permission_required = 'ipam.add_vlan'
+    model_form = forms.SecretCSVForm
+    table = tables.SecretTable
+    default_return_url = 'secrets:secret_list'
 
-    session_key = request.COOKIES.get('session_key', None)
+    master_key = None
 
-    if request.method == 'POST':
-        form = forms.SecretImportForm(request.POST)
+    def _save_obj(self, obj_form):
+        """
+        Encrypt each object before saving it to the database.
+        """
+        obj = obj_form.save(commit=False)
+        obj.encrypt(self.master_key)
+        obj.save()
+        return obj
 
-        if session_key is None:
-            form.add_error(None, "No session key was provided with the request. Unable to encrypt secret data.")
+    def post(self, request):
 
-        if form.is_valid():
+        # Grab the session key from cookies.
+        session_key = request.COOKIES.get('session_key')
+        if session_key:
 
-            new_secrets = []
-
-            session_key = base64.b64decode(session_key)
-            master_key = None
+            # Attempt to derive the master key using the provided session key.
             try:
                 sk = SessionKey.objects.get(userkey__user=request.user)
-                master_key = sk.get_master_key(session_key)
+                self.master_key = sk.get_master_key(base64.b64decode(session_key))
             except SessionKey.DoesNotExist:
-                form.add_error(None, "No session key found for this user.")
+                messages.error(request, "No session key found for this user.")
 
-            if master_key is None:
-                form.add_error(None, "Invalid private key! Unable to encrypt secret data.")
+            if self.master_key is not None:
+                return super(SecretBulkImportView, self).post(request)
             else:
-                try:
-                    with transaction.atomic():
-                        for secret in form.cleaned_data['csv']:
-                            secret.encrypt(master_key)
-                            secret.save()
-                            new_secrets.append(secret)
+                messages.error(request, "Invalid private key! Unable to encrypt secret data.")
 
-                    table = tables.SecretTable(new_secrets)
-                    messages.success(request, u"Imported {} new secrets.".format(len(new_secrets)))
+        else:
+            messages.error(request, "No session key was provided with the request. Unable to encrypt secret data.")
 
-                    return render(request, 'import_success.html', {
-                        'table': table,
-                        'return_url': 'secrets:secret_list',
-                    })
-
-                except IntegrityError as e:
-                    form.add_error('csv', "Record {}: {}".format(len(new_secrets) + 1, e.__cause__))
-
-    else:
-        form = forms.SecretImportForm()
-
-    return render(request, 'secrets/secret_import.html', {
-        'form': form,
-        'return_url': 'secrets:secret_list',
-    })
+        return render(request, self.template_name, {
+            'form': self._import_form(request.POST),
+            'fields': self.model_form().fields,
+            'obj_type': self.model_form._meta.model._meta.verbose_name,
+            'return_url': self.default_return_url,
+        })
 
 
 class SecretBulkEditView(PermissionRequiredMixin, BulkEditView):

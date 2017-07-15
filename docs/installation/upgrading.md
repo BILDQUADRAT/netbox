@@ -52,11 +52,26 @@ Once the new code is in place, run the upgrade script (which may need to be run 
 # ./upgrade.sh
 ```
 
+!!! warning
+    The upgrade script will prefer Python3 and pip3 if both executables are available. To force it to use Python2 and pip, use the `-2` argument as below.
+
+```no-highlight
+# ./upgrade.sh -2
+```
+
 This script:
 
 * Installs or upgrades any new required Python packages
 * Applies any database migrations that were included in the release
 * Collects all static files to be served by the HTTP service
+
+!!! note
+    It's possible that the upgrade script will display a notice warning of unreflected database migrations:
+
+        Your models have changes that are not yet reflected in a migration, and so won't be applied.
+        Run 'manage.py makemigrations' to make new migrations, and then re-run 'manage.py migrate' to apply them.
+
+    This may occur due to semantic differences in environment, and can be safely ignored. Never attempt to create new migrations unless you are intentionally modifying the database schema.
 
 # Restart the WSGI Service
 
